@@ -6,7 +6,14 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [API / External Integrations] — The Notion button trigger carries no payload
+### [Deployment] — The Apps Script Web App deployment and the Next.js middleware version must match
+**Rule:** `apps-script/Code.gs` in this repo is a reference copy — the actual executing code lives in the Google Apps Script project's Web App deployment, which must be redeployed (Deploy > Manage deployments > Edit > New version) any time `Code.gs` changes here. There is no CI/CD link between this repo and the Apps Script project; they are updated manually and independently.
+**Why:** ⚠️ SILENT FAILURE — if the middleware is updated to expect JSON (`{ charts: [...] }`) but the live Apps Script deployment still runs the old ImgBB/Notion-calling version, the middleware's `fetchChartsFromScript()` will throw on JSON parsing, but there's no automated check to catch the mismatch before that happens in production.
+**Example (correct):** After editing `Code.gs` here, immediately open the Apps Script editor, paste the change, and create a new Web App deployment version.
+**Example (wrong):** Editing `Code.gs` in this repo and assuming the live script picked it up automatically.
+**Source:** Observed — this exact mismatch is what caused the `undefined` NOTION_PAGE_ID and validation errors earlier in this project's history.
+
+---
 **Rule:** The button push arrives as a bare POST with no usable body. Do not add logic that expects `request.json()`/`request.body` to contain chart identifiers, user info, or anything else — there is nothing there to parse.
 **Why:** ⚠️ SILENT FAILURE risk if a future change reintroduces body-parsing logic that "falls back" to a default instead of throwing — a fallback would quietly sync the wrong (or only one) chart with no error, which is exactly the class of bug v0.2.0 shipped with (it assumed a `chartTitle` field that was never sent).
 **Example (correct):** Route ignores the request body entirely and instead discovers all chart anchors by reading the Notion page directly.
@@ -24,13 +31,21 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [API / External Integrations] — [UNVERIFIED] The Apps Script must honor a `chart` query parameter
-**Rule (tentative):** `syncOneChart()` calls the Apps Script as `GET {GOOGLE_APPS_SCRIPT_URL}?chart={chartTitle}`, assuming the script branches on this parameter to return the correct chart's image.
-**Why:** ⚠️ SILENT FAILURE if the script ignores the query param — every discovered chart anchor would get uploaded the exact same image, with no error at any layer (the fetch succeeds, the upload succeeds, the Notion update succeeds; only the visible content is wrong).
-**What would confirm/deny it:** Check the Apps Script's `doGet(e)` handler for `e.parameter.chart` (or equivalent) and confirm it actually changes which chart is rendered.
-**Example (correct):** Script reads `e.parameter.chart`, looks up the matching chart definition, and renders only that one.
-**Example (wrong):** Script always renders whatever chart is currently active in the spreadsheet, ignoring the query string entirely.
-**Source:** Inferred from the multi-chart redesign; not confirmed against the actual Apps Script (not provided in this repo).
+### [API / External Integrations] — Vercel Blob is the ONLY image host; the Apps Script must not also upload anywhere
+**Rule:** The Apps Script's job is strictly: export each chart as PNG, base64-encode it, return it as JSON. It must never call ImgBB, Notion, or any other upload target — `route.ts` owns image hosting (Vercel Blob) and the Notion update exclusively.
+**Why:** ⚠️ SILENT FAILURE if this boundary blurs again — this is exactly the bug that shipped originally: the script silently uploaded to ImgBB and updated Notion on its own, while the middleware *also* tried to do a competing update, and neither side knew about the other. Two systems independently "finding and fixing" the same Notion blocks is a race condition, not a redundancy.
+**Example (correct):** Script returns `{ charts: [{ title, imageBase64 }] }` and does nothing else. Middleware decodes, uploads to Blob, updates Notion.
+**Example (wrong):** Script uploads to ImgBB and calls the Notion API directly (the original script's behavior, replaced in v0.4.0).
+**Source:** User-provided original `Code.gs`, which revealed the duplication; corrected in v0.4.0.
+
+---
+
+### [API / External Integrations] — Chart-to-anchor matching is by exact title string, from two independent sources
+**Rule:** A chart from the script (its `title`, taken from the Google Sheets chart's own title setting) is only synced to a Notion anchor if `anchor.chartTitle === chart.title` exactly (case-sensitive, exact whitespace). These titles live in two different systems (Google Sheets chart config, Notion page text) with no shared ID — keeping them in sync is a manual convention, not enforced anywhere.
+**Why:** A typo or rename on either side (renaming a chart in Sheets, or editing the Notion anchor text) silently breaks the match for that one chart — it shows up in `unmatchedAnchors` or `unmatchedCharts` in the response, not as a hard failure, so it's easy to miss unless someone checks the response body or logs.
+**Example (correct):** Sheets chart titled `Monthly Burn Rate`, Notion block reading `[Chart] Monthly Burn Rate`.
+**Example (wrong):** Sheets chart titled `Monthly Burn Rate `  (trailing space) — will not match `[Chart] Monthly Burn Rate` and will silently land in `unmatchedCharts` every run.
+**Source:** `route.ts`, matching logic added in v0.4.0.
 
 ---
 

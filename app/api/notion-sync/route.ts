@@ -56,29 +56,51 @@ async function findAllChartAnchors(blocks: any[], parentId: string): Promise<Anc
   return matches;
 }
 
-// Fetches the chart image for a single anchor from the Google Apps Script,
-// uploads it to Vercel Blob, then updates or inserts the corresponding
-// Notion image block. Throws on failure — caller decides whether one
-// chart's failure should stop the whole run.
-async function syncOneChart(anchor: AnchorMatch): Promise<void> {
+type ScriptChart = {
+  title: string;
+  imageBase64: string;
+};
+
+// Fetches ALL charts in one call. The Apps Script's doGet no longer talks to
+// Notion or ImgBB at all — it just exports every chart on the sheet as a
+// base64-encoded PNG and returns them as JSON: { charts: [{ title, imageBase64 }] }.
+// Vercel Blob (via `put` below) is now the only image host in this system.
+async function fetchChartsFromScript(): Promise<ScriptChart[]> {
+  const scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
+  if (!scriptUrl) {
+    throw new Error('GOOGLE_APPS_SCRIPT_URL environment variable is not set.');
+  }
+
+  console.log(`[NOTION SYNC] Fetching all charts from Google Apps Script...`);
+  const scriptResponse = await fetch(scriptUrl, { method: 'GET' });
+  if (!scriptResponse.ok) {
+    const text = await scriptResponse.text().catch(() => '');
+    throw new Error(`Google Apps Script responded with status ${scriptResponse.status}: ${text}`);
+  }
+
+  const data = await scriptResponse.json();
+  if (!Array.isArray(data?.charts)) {
+    throw new Error(`Google Apps Script response did not contain a "charts" array. Received: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  console.log(`[NOTION SYNC] Script returned ${data.charts.length} chart(s): ${data.charts.map((c: ScriptChart) => c.title).join(', ')}`);
+  return data.charts;
+}
+
+// Uploads one chart's base64 PNG to Vercel Blob, then updates or inserts the
+// corresponding Notion image block. Throws on failure — caller decides
+// whether one chart's failure should stop the whole run.
+async function syncOneChart(anchor: AnchorMatch, chart: ScriptChart): Promise<void> {
   const { chartTitle, anchorId, parentId, targetId } = anchor;
 
-  console.log(`[NOTION SYNC] [${chartTitle}] Fetching chart from Google Apps Script...`);
-  const scriptUrl = new URL(process.env.GOOGLE_APPS_SCRIPT_URL!);
-  scriptUrl.searchParams.set('chart', chartTitle);
-
-  const scriptResponse = await fetch(scriptUrl.toString(), { method: 'GET' });
-  if (!scriptResponse.ok) {
-    throw new Error(`Google Apps Script responded with status: ${scriptResponse.status}`);
-  }
-  const imageBuffer = await scriptResponse.blob();
-  console.log(`[NOTION SYNC] [${chartTitle}] Retrieved image blob (${imageBuffer.size} bytes).`);
+  const imageBuffer = Buffer.from(chart.imageBase64, 'base64');
+  console.log(`[NOTION SYNC] [${chartTitle}] Decoded image buffer (${imageBuffer.length} bytes).`);
 
   const timestamp = new Date().getTime();
   const slug = chartTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   console.log(`[NOTION SYNC] [${chartTitle}] Uploading to Vercel Blob...`);
   const { url: publicImageUrl } = await put(`charts/${slug}-${timestamp}.png`, imageBuffer, {
     access: 'public',
+    contentType: 'image/png',
   });
   console.log(`[NOTION SYNC] [${chartTitle}] Blob upload complete. URL: ${publicImageUrl}`);
 
@@ -116,29 +138,61 @@ export async function POST(request: Request) {
   console.log(`[NOTION SYNC] Triggered at ${new Date().toISOString()}`);
 
   try {
-    const pageId = process.env.NOTION_PAGE_ID!;
+    const pageId = process.env.NOTION_PAGE_ID;
+    if (!pageId) {
+      throw new Error('NOTION_PAGE_ID environment variable is not set.');
+    }
+
     console.log(`[NOTION SYNC] Fetching block state for Notion Page ID: ${pageId}...`);
     const blocksResponse = await notion.blocks.children.list({ block_id: pageId });
-
     const anchors = await findAllChartAnchors(blocksResponse.results, pageId);
-    console.log(`[NOTION SYNC] Found ${anchors.length} chart anchor(s): ${anchors.map(a => a.chartTitle).join(', ') || '(none)'}`);
+    console.log(`[NOTION SYNC] Found ${anchors.length} chart anchor(s) in Notion: ${anchors.map(a => a.chartTitle).join(', ') || '(none)'}`);
 
-    if (anchors.length === 0) {
+    const charts = await fetchChartsFromScript();
+
+    // Match each anchor to a chart returned by the script, by exact title.
+    // Anchors with no matching chart, and charts with no matching anchor,
+    // are logged and skipped rather than treated as fatal errors — a
+    // one-sided mismatch on a given run shouldn't block the charts that
+    // do line up.
+    const pairs: { anchor: AnchorMatch; chart: ScriptChart }[] = [];
+    const unmatchedAnchors: string[] = [];
+    for (const anchor of anchors) {
+      const chart = charts.find(c => c.title === anchor.chartTitle);
+      if (chart) {
+        pairs.push({ anchor, chart });
+      } else {
+        unmatchedAnchors.push(anchor.chartTitle);
+      }
+    }
+    const unmatchedCharts = charts
+      .filter(c => !anchors.some(a => a.chartTitle === c.title))
+      .map(c => c.title);
+
+    if (unmatchedAnchors.length > 0) {
+      console.log(`[NOTION SYNC] ⚠️ Notion anchor(s) with no matching chart from the script: ${unmatchedAnchors.join(', ')}`);
+    }
+    if (unmatchedCharts.length > 0) {
+      console.log(`[NOTION SYNC] ⚠️ Chart(s) from the script with no matching Notion anchor: ${unmatchedCharts.join(', ')}`);
+    }
+
+    if (pairs.length === 0) {
       throw new Error(
-        `No blocks found starting with "${ANCHOR_PREFIX}". Add at least one heading_3 or paragraph ` +
-        `block like "${ANCHOR_PREFIX}My Chart Title" to the Notion page before syncing.`
+        `No chart titles matched between the Notion page anchors (${anchors.map(a => a.chartTitle).join(', ') || 'none'}) ` +
+        `and the charts returned by the script (${charts.map(c => c.title).join(', ') || 'none'}). ` +
+        `Chart titles in Google Sheets must exactly match the text after "${ANCHOR_PREFIX}" in Notion.`
       );
     }
 
-    // Sync each chart independently — one failure shouldn't block the rest.
-    const results = await Promise.allSettled(anchors.map(syncOneChart));
+    // Sync each matched chart independently — one failure shouldn't block the rest.
+    const results = await Promise.allSettled(pairs.map(({ anchor, chart }) => syncOneChart(anchor, chart)));
 
     const succeeded = results
-      .map((r, i) => ({ r, title: anchors[i].chartTitle }))
+      .map((r, i) => ({ r, title: pairs[i].anchor.chartTitle }))
       .filter(({ r }) => r.status === 'fulfilled')
       .map(({ title }) => title);
     const failed = results
-      .map((r, i) => ({ r, title: anchors[i].chartTitle }))
+      .map((r, i) => ({ r, title: pairs[i].anchor.chartTitle }))
       .filter(({ r }) => r.status === 'rejected')
       .map(({ r, title }) => ({
         chartTitle: title,
@@ -146,14 +200,16 @@ export async function POST(request: Request) {
       }));
 
     if (failed.length > 0) {
-      console.error(`[NOTION SYNC] ⚠️ ${failed.length}/${anchors.length} chart(s) failed:`, failed);
+      console.error(`[NOTION SYNC] ⚠️ ${failed.length}/${pairs.length} chart(s) failed:`, failed);
     }
-    console.log(`[NOTION SYNC] ✅ Sync run complete. ${succeeded.length}/${anchors.length} chart(s) synced.`);
+    console.log(`[NOTION SYNC] ✅ Sync run complete. ${succeeded.length}/${pairs.length} chart(s) synced.`);
 
     return NextResponse.json({
       success: failed.length === 0,
       synced: succeeded,
       failed,
+      unmatchedAnchors,
+      unmatchedCharts,
     }, { status: failed.length > 0 && succeeded.length === 0 ? 500 : 200 });
 
   } catch (error) {
