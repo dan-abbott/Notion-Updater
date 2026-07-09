@@ -6,14 +6,35 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [API / External Integrations] — Anchor block text must match exactly
-**Rule:** The Notion page must contain a `heading_3` or `paragraph` block whose text is *exactly* `[Chart] {chartTitle}` (case-sensitive, no extra whitespace), where `chartTitle` is the value sent in the sync request body.
-**Why:** ⚠️ SILENT FAILURE risk if the match logic is ever loosened to a substring/fuzzy match — but as currently written, a mismatch throws an explicit error rather than failing silently. Do not "helpfully" change the comparison to `.includes()` or case-insensitive matching without also handling the case where multiple blocks could now match.
-**Example (correct):** Notion block text: `[Chart] Monthly Burn Rate`, request body: `{ "chartTitle": "Monthly Burn Rate" }`
-**Example (wrong):** Notion block text: `Chart: Monthly Burn Rate` (missing the `[Chart] ` prefix) — sync will fail with "no anchor found."
-**Source:** `findAnchorAndTarget()` in `app/api/notion-sync/route.ts`.
+### [API / External Integrations] — The Notion button trigger carries no payload
+**Rule:** The button push arrives as a bare POST with no usable body. Do not add logic that expects `request.json()`/`request.body` to contain chart identifiers, user info, or anything else — there is nothing there to parse.
+**Why:** ⚠️ SILENT FAILURE risk if a future change reintroduces body-parsing logic that "falls back" to a default instead of throwing — a fallback would quietly sync the wrong (or only one) chart with no error, which is exactly the class of bug v0.2.0 shipped with (it assumed a `chartTitle` field that was never sent).
+**Example (correct):** Route ignores the request body entirely and instead discovers all chart anchors by reading the Notion page directly.
+**Example (wrong):** `const chartTitle = body?.chartTitle ?? 'Default Chart'` — silently syncs the wrong thing forever.
+**Source:** Observed production behavior (v0.2.0 failed immediately in prod with "Request body must include a chartTitle field"), confirmed by user: the button is strictly a trigger.
 
 ---
+
+### [API / External Integrations] — Chart anchors are discovered by prefix match, not exact match, and there can be many per page
+**Rule:** Any `heading_3` or `paragraph` block whose text starts with `[Chart] ` is treated as a chart anchor; everything after that prefix (trimmed) becomes the chart's title, which is then sent to the Apps Script as the `chart` query param. The page is expected to contain zero or more such anchors, and all of them are synced in a single run.
+**Why:** Since there is no per-request targeting information, the anchor prefix in the Notion page itself is the only source of truth for which charts exist and what to call them. Renaming an anchor's title effectively renames which chart image the Apps Script is asked to render next sync — do this deliberately.
+**Example (correct):** Block text `[Chart] Monthly Burn Rate` → chart title sent to script is `Monthly Burn Rate`.
+**Example (wrong):** Assuming there's only ever one `[Chart]` block on the page — the current code will find and sync all of them, so an old/stale `[Chart]` block left on the page will keep getting synced too.
+**Source:** `findAllChartAnchors()` / `syncOneChart()` in `route.ts`, v0.3.0.
+
+---
+
+### [API / External Integrations] — [UNVERIFIED] The Apps Script must honor a `chart` query parameter
+**Rule (tentative):** `syncOneChart()` calls the Apps Script as `GET {GOOGLE_APPS_SCRIPT_URL}?chart={chartTitle}`, assuming the script branches on this parameter to return the correct chart's image.
+**Why:** ⚠️ SILENT FAILURE if the script ignores the query param — every discovered chart anchor would get uploaded the exact same image, with no error at any layer (the fetch succeeds, the upload succeeds, the Notion update succeeds; only the visible content is wrong).
+**What would confirm/deny it:** Check the Apps Script's `doGet(e)` handler for `e.parameter.chart` (or equivalent) and confirm it actually changes which chart is rendered.
+**Example (correct):** Script reads `e.parameter.chart`, looks up the matching chart definition, and renders only that one.
+**Example (wrong):** Script always renders whatever chart is currently active in the spreadsheet, ignoring the query string entirely.
+**Source:** Inferred from the multi-chart redesign; not confirmed against the actual Apps Script (not provided in this repo).
+
+---
+
+
 
 ### [API / External Integrations] — Recursive child-fetching costs one Notion API call per nested block
 **Rule:** Any block with `has_children: true` triggers a live `notion.blocks.children.list` call during the anchor search. Keep the anchor block as shallow as possible (ideally top-level on the page).
@@ -24,12 +45,12 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [API / External Integrations] — Image block insertion vs. update are two different code paths
-**Rule:** If an image block already exists immediately after the anchor, the sync **updates** it (`notion.blocks.update`). If not, it **appends** a new one (`notion.blocks.children.append`). These are not interchangeable — `blocks.update` cannot create a block, and `blocks.children.append` cannot target a specific existing block.
-**Why:** ⚠️ SILENT FAILURE if this distinction is collapsed — calling `update` on a non-existent block ID throws visibly (good), but calling `append` every time instead of `update` would silently pile up duplicate image blocks after the anchor on every sync, with no error at all.
-**Example (correct):** Check `match.targetId` and branch accordingly (current implementation).
-**Example (wrong):** Always calling `blocks.children.append` regardless of whether an image already exists.
-**Source:** `route.ts`, v0.2.0.
+### [API / External Integrations] — Image block insertion vs. update are two different code paths, per anchor
+**Rule:** For each discovered chart anchor, if an image block already exists immediately after it, the sync **updates** it (`notion.blocks.update`). If not, it **appends** a new one (`notion.blocks.children.append`). This check happens independently per anchor inside `syncOneChart()` — there is no page-level "first sync vs. later sync" flag.
+**Why:** ⚠️ SILENT FAILURE if this distinction is collapsed — calling `update` on a non-existent block ID throws visibly (good), but calling `append` every time instead of `update` would silently pile up duplicate image blocks after each anchor on every sync, with no error at all.
+**Example (correct):** Check `targetId` per anchor and branch accordingly (current implementation).
+**Example (wrong):** Always calling `blocks.children.append` regardless of whether an image already exists for that anchor.
+**Source:** `route.ts`, originally v0.2.0, generalized to multiple anchors in v0.3.0.
 
 ---
 
@@ -58,10 +79,4 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 **Example (wrong):** `"next": "14.2.5"` (the version originally installed, before this was caught).
 **Source:** Next.js Security Update, Dec 11 2025 (https://nextjs.org/blog/security-update-2025-12-11).
 
----
 
-### [UNVERIFIED] — Google Apps Script response is assumed to always be image/png
-**Rule (tentative):** The code treats `scriptResponse.blob()` as image data and writes it to `charts/dashboard-plot-{timestamp}.png` regardless of the actual `Content-Type` header returned by the Apps Script.
-**Why:** If the Apps Script ever returns an error page (e.g. HTML from a Google auth redirect) instead of the chart image, this would upload non-image content to Blob storage and pass a broken URL to Notion — Notion would likely just fail to render the image block, which is not fully silent but also not clearly diagnosed by the current error handling.
-**What would confirm/deny it:** Check whether the Apps Script always returns `Content-Type: image/png` even on its own internal errors, and consider adding a content-type check before the Blob upload.
-**Source:** Inferred from code; not confirmed against the actual Apps Script implementation (not provided).
