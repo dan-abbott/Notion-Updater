@@ -6,7 +6,14 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [Deployment] — The Apps Script Web App deployment and the Next.js middleware version must match
+### [Deployment] — Apps Script Web App must have "Who has access: Anyone"
+**Rule:** The Web App deployment's access setting must be **Anyone** (with "Execute as: Me"), not "Only myself" or an org-restricted option. The middleware calls it as an unauthenticated external HTTP request.
+**Why:** ⚠️ SILENT FAILURE in the sense that Google doesn't return a 401/403 — it returns a 200 OK containing an HTML sign-in page. Naively calling `.json()` on that response throws an opaque `Unexpected token '<'` parse error with no indication that the real problem is a permissions setting three steps removed from the actual code.
+**Example (correct):** Deploy > Manage deployments > Edit > Who has access: **Anyone**.
+**Example (wrong):** Who has access: **Only myself** — works fine when you test the URL in your own logged-in browser, fails silently (as an HTML page) when called from server-to-server code with no Google session.
+**Source:** Observed in production — Apps Script call returned `<!DOCTYPE ...>` instead of the expected JSON.
+
+---
 **Rule:** `apps-script/Code.gs` in this repo is a reference copy — the actual executing code lives in the Google Apps Script project's Web App deployment, which must be redeployed (Deploy > Manage deployments > Edit > New version) any time `Code.gs` changes here. There is no CI/CD link between this repo and the Apps Script project; they are updated manually and independently.
 **Why:** ⚠️ SILENT FAILURE — if the middleware is updated to expect JSON (`{ charts: [...] }`) but the live Apps Script deployment still runs the old ImgBB/Notion-calling version, the middleware's `fetchChartsFromScript()` will throw on JSON parsing, but there's no automated check to catch the mismatch before that happens in production.
 **Example (correct):** After editing `Code.gs` here, immediately open the Apps Script editor, paste the change, and create a new Web App deployment version.

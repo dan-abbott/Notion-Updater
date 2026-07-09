@@ -4,7 +4,19 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.4.0] — 2026-07-09
+### [0.4.1] — 2026-07-09
+**Type:** Fix
+**Scope:** `app/api/notion-sync/route.ts`
+**Summary:** Production run hit an unhandled `SyntaxError: Unexpected token '<'` when the Apps Script returned an HTML Google sign-in page instead of JSON. Reading the response as text first and JSON-parsing manually gives a diagnosable error instead of a raw crash.
+**Details:**
+- `fetchChartsFromScript()` now calls `.text()` first, then `JSON.parse()`s it in a try/catch, rather than calling `.json()` directly.
+- On parse failure, the thrown error names the likely cause (Web App "Who has access" deployment setting) and includes the first 200 characters of the actual response body for diagnosis.
+- Root cause of the specific failure this fixes the *symptom* for: the Apps Script Web App deployment's access was not set to "Anyone," so unauthenticated server-to-server calls were redirected to a Google login page. See `KNOWN_INVARIANTS.md` for the deployment setting itself — this patch only makes that failure mode legible, it doesn't fix the deployment setting (that's done in the Apps Script console, not code).
+**Breaking:** No.
+
+---
+
+
 **Type:** Refactor
 **Scope:** `app/api/notion-sync/route.ts`, `apps-script/Code.gs` (new)
 **Summary:** User supplied the actual Apps Script source, revealing it already did full ImgBB upload + Notion block search/update itself — duplicating and conflicting with the middleware. Removed ImgBB entirely; Vercel Blob is now the single image host, and the Apps Script's only job is exporting chart data.

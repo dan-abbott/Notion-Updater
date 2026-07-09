@@ -78,7 +78,17 @@ async function fetchChartsFromScript(): Promise<ScriptChart[]> {
     throw new Error(`Google Apps Script responded with status ${scriptResponse.status}: ${text}`);
   }
 
-  const data = await scriptResponse.json();
+  const responseText = await scriptResponse.text();
+  let data: any;
+  try {
+    data = JSON.parse(responseText);
+  } catch {
+    throw new Error(
+      `Google Apps Script did not return valid JSON. This usually means the Web App deployment ` +
+      `requires a Google sign-in (check "Who has access" in Deploy > Manage deployments) rather ` +
+      `than running the script directly. First 200 chars of response: ${responseText.slice(0, 200)}`
+    );
+  }
   if (!Array.isArray(data?.charts)) {
     throw new Error(`Google Apps Script response did not contain a "charts" array. Received: ${JSON.stringify(data).slice(0, 300)}`);
   }
