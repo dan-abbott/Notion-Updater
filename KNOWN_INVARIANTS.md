@@ -76,12 +76,21 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [Environment / Config] — Four environment variables are required, with no fallback
-**Rule:** `NOTION_TOKEN`, `NOTION_PAGE_ID`, `GOOGLE_APPS_SCRIPT_URL` must all be set (as non-null via `!` assertions in the code) or the route will throw at runtime, not at build time.
-**Why:** ⚠️ SILENT FAILURE at build time — the `!` non-null assertions mean TypeScript won't catch a missing env var; the build will succeed and the route will only fail when invoked. Vercel Blob's token (`BLOB_READ_WRITE_TOKEN`) is normally auto-injected by Vercel when Blob storage is attached to the project, but must be set manually for local dev.
-**Example (correct):** All four vars set in Vercel Project Settings → Environment Variables before deploying.
-**Example (wrong):** Deploying without `NOTION_PAGE_ID` set — build succeeds, first real request 500s with "Cannot read properties of undefined."
-**Source:** Observed behavior; `process.env.X!` pattern in `route.ts`.
+### [Environment / Config] — Three environment variables are required, with no fallback
+**Rule:** `NOTION_TOKEN`, `NOTION_PAGE_ID`, and `GOOGLE_APPS_SCRIPT_URL` must all be set or the route throws at runtime, not at build time.
+**Why:** ⚠️ SILENT FAILURE at build time — TypeScript's `!` non-null assertions (where used) or explicit runtime checks don't run until the route is actually invoked, so a missing var won't surface until the first real Notion button press.
+**Example (correct):** All three vars set in Vercel Project Settings → Environment Variables before deploying.
+**Example (wrong):** Deploying without `NOTION_PAGE_ID` set — build succeeds, first real request fails with a Notion API validation error citing `block_id` as `"undefined"`.
+**Source:** Observed behavior in this project's history — this exact failure occurred before `NOTION_PAGE_ID` was set in Vercel.
+
+---
+
+
+**Rule:** Do not add or rely on a manually-set `BLOB_READ_WRITE_TOKEN` for production. New Blob stores connected to a project default to OIDC: Vercel auto-injects `BLOB_STORE_ID` and a short-lived `VERCEL_OIDC_TOKEN` at runtime, and the `@vercel/blob` SDK reads both automatically — no code change and no token in env vars required. This requires `@vercel/blob` to be a recent version (OIDC-aware); `^0.27.0` predates this and will throw "No token found" even when the store is correctly connected.
+**Why:** ⚠️ SILENT FAILURE risk in the other direction — if someone "fixes" a future auth error by manually pasting a static `BLOB_READ_WRITE_TOKEN` into Vercel env vars, it will work, but it reintroduces exactly the long-lived-secret risk Vercel moved away from, and creates a second, undocumented auth path alongside OIDC.
+**Example (correct):** Connect a Blob store to the project via the Storage tab, keep `@vercel/blob` current, deploy — no manual token needed.
+**Example (wrong):** Seeing "No token found" and adding a static `BLOB_READ_WRITE_TOKEN` as the fix, when the actual fix was bumping an outdated SDK version.
+**Source:** Observed in production — SDK pinned to `^0.27.0` threw "No token found" despite `BLOB_STORE_ID` and `BLOB_WEBHOOK_PUBLIC_KEY` being present (the OIDC-mode env vars); resolved by bumping to `^2.6.1`.
 
 ---
 

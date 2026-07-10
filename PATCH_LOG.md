@@ -4,7 +4,19 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.4.1] — 2026-07-09
+### [0.4.2] — 2026-07-10
+**Type:** Fix
+**Scope:** `package.json`, `.env.example`
+**Summary:** Production run got "Vercel Blob: No token found" even with a Blob store connected, because Vercel's newer stores default to OIDC authentication (no static token at all) and the pinned SDK version predates OIDC support.
+**Details:**
+- Bumped `@vercel/blob` from `^0.27.0` to `^2.6.1` so the SDK recognizes the auto-injected `VERCEL_OIDC_TOKEN` + `BLOB_STORE_ID` pair instead of only looking for a static `BLOB_READ_WRITE_TOKEN`.
+- `.env.example` updated: removed the implication that `BLOB_READ_WRITE_TOKEN` is required in production; noted it's only relevant for local dev or legacy static-token stores.
+- No changes needed to `route.ts` itself — `put()` calls are unchanged; this was purely a dependency version issue.
+**Breaking:** No — purely additive/corrective; existing static-token stores continue to work unchanged.
+
+---
+
+
 **Type:** Fix
 **Scope:** `app/api/notion-sync/route.ts`
 **Summary:** Production run hit an unhandled `SyntaxError: Unexpected token '<'` when the Apps Script returned an HTML Google sign-in page instead of JSON. Reading the response as text first and JSON-parsing manually gives a diagnosable error instead of a raw crash.
