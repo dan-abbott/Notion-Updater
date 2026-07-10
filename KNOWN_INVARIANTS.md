@@ -112,9 +112,25 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [Deployment] — `maxDuration` must stay explicit and sized for the current plan
-**Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more Notion blocks).
-**Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + chart sync pipeline needs. Without an explicit `maxDuration`, requests would intermittently 504 (`FUNCTION_INVOCATION_TIMEOUT`) as chart count or Notion page complexity grows, with no code-level error to point at.
+### [API / External Integrations] — Notion's button-webhook has a shorter response timeout than this pipeline; POST must ack immediately
+**Rule:** `POST` must never `await` the full sync pipeline before responding to Notion. It does the minimum synchronous work (validate `NOTION_PAGE_ID`, post the first status update, kick off `runSyncPipeline()` via `waitUntil()`) and returns immediately. All of the actual work — generateMetrics trigger, chart fetch, Blob uploads, Notion block updates — happens in the background after the response is already sent.
+**Why:** ⚠️ SILENT FAILURE from the user's perspective if this is violated — not a backend bug, but Notion's button UI reports "webhook request timed out" on every single run, training people to believe the sync is broken even when it completes successfully moments later. This was observed directly in production: the `[Status]` block kept updating and the sync finished correctly, while Notion showed a hard failure.
+**Example (correct):** `POST` awaits only `updateStatus(pageId, 'Pulling in the data...')`, then `waitUntil(runSyncPipeline(pageId))`, then returns.
+**Example (wrong):** Awaiting `runSyncPipeline()` (or the equivalent inline logic) directly inside `POST` before returning a response — reintroduces the exact timeout Notion reported.
+**Source:** User-reported production error ("Button failed to execute: webhook request timed out"); fixed in `route.ts` v0.5.1.
+
+---
+
+### [API / External Integrations] — `runSyncPipeline()` has no HTTP response to fail through; every path must update `[Status]` itself
+**Rule:** Since `runSyncPipeline()` runs after `POST` has already returned a response, there is no way to report success or failure back through the HTTP layer anymore. Every branch — the `generateMetrics` failure, the zero-matched-charts case, partial chart failures, full success, and the outer catch-all — must call `updateStatus()` with an outcome-specific message.
+**Why:** ⚠️ SILENT FAILURE if a new failure branch is added without a corresponding `updateStatus()` call — since there's no response body left to inspect, a silently-swallowed error in the background pipeline would be genuinely invisible; the `[Status]` block is now the ONLY channel for reporting outcomes.
+**Example (correct):** Every `return` inside `runSyncPipeline()`'s try block is preceded by an `updateStatus()` call describing what happened.
+**Example (wrong):** Adding a new early-return path (e.g. a new validation check) without also calling `updateStatus()` — the run would just silently stop with no visible indication anywhere.
+**Source:** `route.ts` v0.5.1, direct consequence of the fire-and-forget restructure.
+
+---
+**Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more Notion blocks). Since v0.5.1, this is also the hard ceiling on how long `waitUntil(runSyncPipeline(...))` is allowed to keep running after `POST` has already responded — it is not a separate, unlimited background-task budget.
+**Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + chart sync pipeline needs. Without an explicit `maxDuration`, requests would intermittently 504 (`FUNCTION_INVOCATION_TIMEOUT`) as chart count or Notion page complexity grows, with no code-level error to point at. Post-v0.5.1, since the response is sent almost immediately, a 504 here would no longer be visible to Notion at all — instead the background pipeline would simply get killed mid-run once `maxDuration` elapses, silently leaving the `[Status]` block on whatever message it last reached.
 **Example (correct):** `export const maxDuration = 60;` at the top of `route.ts`, next to the other top-level exports.
 **Example (wrong):** Removing this export to "clean up" the file, or leaving it at a stale low value after adding the `generateMetrics` trigger step.
 **Source:** Vercel Functions documentation (https://vercel.com/docs/functions/configuring-functions/duration); added in v0.5.0 alongside the `generateMetrics` orchestration.

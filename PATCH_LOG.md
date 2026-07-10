@@ -4,7 +4,20 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.5.0] — 2026-07-10
+### [0.5.1] — 2026-07-10
+**Type:** Fix
+**Scope:** `app/api/notion-sync/route.ts`, `package.json`
+**Summary:** Notion reported "webhook request timed out" on every button click, even though the pipeline itself completed successfully (confirmed by the `[Status]` block continuing to update after the error appeared). Root cause: Notion's button-webhook has its own response-wait timeout, shorter than this pipeline's total runtime. Fixed by responding to Notion immediately and running the actual pipeline in the background.
+**Details:**
+- Added `@vercel/functions` dependency for `waitUntil()` — the version-independent Vercel primitive for "keep this promise running after the response is sent," as opposed to Next.js's own `after()`/`unstable_after()`, which requires Next.js 15.1+ (this project is intentionally pinned to 14.2.35 per the CVE fix in v0.1.0).
+- `POST` now does the bare minimum synchronously: validate `NOTION_PAGE_ID`, post the first `updateStatus(pageId, 'Pulling in the data...')` (fast, so it's visibly there almost immediately), call `waitUntil(runSyncPipeline(pageId))`, and return `{ success: true, message: 'Sync started' }` right away — well within Notion's webhook response window.
+- Extracted the entire former `POST` body (generateMetrics trigger, chart fetch, matching, Blob upload, Notion updates, all status updates) into a new `runSyncPipeline()` function, run via `waitUntil()`. This function has no HTTP response to return through by the time it's running — every failure path must update the `[Status]` block itself, since that's the only way a failure becomes visible once Notion has already gotten its immediate "Sync started" acknowledgment.
+- `maxDuration = 60` (added in v0.5.0) is what actually allows the background work to keep running after the response is sent — `waitUntil()` extends the function's lifetime up to `maxDuration`, it doesn't grant unlimited extra time.
+**Breaking:** Yes — the immediate HTTP response no longer reflects whether the sync actually succeeded (it only confirms the pipeline started). Anything that was checking the POST response body for `success`/`synced`/`failed` needs to check the `[Status]` block on the Notion page instead; the response now only ever says `{ success: true, message: 'Sync started' }` (assuming `NOTION_PAGE_ID` is set) or a `500` if that env var is missing.
+
+---
+
+
 **Type:** Feature
 **Scope:** `app/api/notion-sync/route.ts` (requires paired changes in the Portfolio Tracker Apps Script project — see that repo's PATCH_LOG.md v0.3.2)
 **Summary:** The Notion button now triggers the full pipeline in one click: pull today's data from the slide deck, run the analysis, then sync charts — with live-ish progress feedback written into a `[Status]` block on the Notion page.

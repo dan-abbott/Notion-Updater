@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { put } from '@vercel/blob';
 import { Client } from '@notionhq/client';
+import { waitUntil } from '@vercel/functions';
 
 // Hobby plan's configurable ceiling. The full pipeline (trigger the Apps
 // Script's import+analysis, fetch charts, upload each to Blob, update
@@ -238,24 +239,50 @@ export async function POST(request: Request) {
   // and synced in a single run.
   console.log(`[NOTION SYNC] Triggered at ${new Date().toISOString()}`);
 
-  // Hoisted so the outer catch block can also post a status update on
-  // failure, even if the failure happens after pageId is set.
-  let pageId: string | undefined;
+  const pageId = process.env.NOTION_PAGE_ID;
+  if (!pageId) {
+    return NextResponse.json(
+      { success: false, error: 'NOTION_PAGE_ID environment variable is not set.' },
+      { status: 500 }
+    );
+  }
 
+  // IMPORTANT: Notion's button-triggered webhook has its own (short)
+  // response-wait timeout that is shorter than this pipeline's total
+  // runtime (generateMetrics + chart fetch + Blob uploads + Notion
+  // updates routinely takes 15-30+ seconds). If we don't respond until
+  // the whole pipeline finishes, Notion reports "webhook request timed
+  // out" to the user even though the pipeline itself completes
+  // successfully moments later — which is exactly what was observed in
+  // production before this fix.
+  //
+  // The fix: post the first status update synchronously (fast, so it's
+  // visibly there almost immediately), acknowledge Notion's webhook right
+  // away, then keep running the actual pipeline in the background via
+  // waitUntil() — which extends this function's lifetime past the
+  // response up to maxDuration, independent of whether Notion is still
+  // listening. All progress after this point is only visible through the
+  // [Status] block, not through Notion's own button UI.
+  await updateStatus(pageId, 'Pulling in the data...');
+
+  waitUntil(runSyncPipeline(pageId));
+
+  return NextResponse.json({ success: true, message: 'Sync started' });
+}
+
+// The actual pipeline, run in the background after POST has already
+// responded to Notion (see waitUntil() above). Every failure path here
+// still needs to update the [Status] block itself, since there is no
+// HTTP response left to report failure through by the time this runs.
+async function runSyncPipeline(pageId: string): Promise<void> {
   try {
-    pageId = process.env.NOTION_PAGE_ID;
-    if (!pageId) {
-      throw new Error('NOTION_PAGE_ID environment variable is not set.');
-    }
-
-    await updateStatus(pageId, 'Pulling in the data...');
-
     try {
       await triggerGenerateMetrics();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       await updateStatus(pageId, `Data import/analysis failed: ${message}`);
-      throw error;
+      console.error(`[NOTION SYNC] ❌ Sync failed! Reason:`, error);
+      return;
     }
 
     await updateStatus(pageId, 'Updating charts...');
@@ -299,7 +326,8 @@ export async function POST(request: Request) {
         `and the charts returned by the script (${charts.map(c => c.title).join(', ') || 'none'}). ` +
         `Chart titles in Google Sheets must exactly match the text after "${ANCHOR_PREFIX}" in Notion.`;
       await updateStatus(pageId, `No charts matched — check titles`);
-      throw new Error(message);
+      console.error(`[NOTION SYNC] ❌ Sync failed! Reason:`, message);
+      return;
     }
 
     // Sync each matched chart independently — one failure shouldn't block the rest.
@@ -327,31 +355,11 @@ export async function POST(request: Request) {
     } else {
       await updateStatus(pageId, `Completed with ${failed.length}/${pairs.length} chart failure(s) — check logs`);
     }
-
-    return NextResponse.json({
-      success: failed.length === 0,
-      synced: succeeded,
-      failed,
-      unmatchedAnchors,
-      unmatchedCharts,
-    }, { status: failed.length > 0 && succeeded.length === 0 ? 500 : 200 });
-
   } catch (error) {
-    // 5. Explicitly log errors to the stderr stream
     console.error(`[NOTION SYNC] ❌ Sync failed! Reason:`, error);
-
     const message = error instanceof Error ? error.message : 'Unknown error occurred';
-    if (pageId) {
-      // Best-effort — updateStatus() never throws, so this is safe even if
-      // the failure happened before any prior status update succeeded.
-      await updateStatus(pageId, `Sync failed: ${message}`);
-    }
-
-    // You can also return the error message in the response for debugging 
-    // directly inside the Notion webhook response body (Make sure not to leak secrets!)
-    return NextResponse.json({ 
-      success: false, 
-      error: message
-    }, { status: 500 });
+    // Best-effort — updateStatus() never throws, so this is safe even if
+    // the failure happened before any prior status update succeeded.
+    await updateStatus(pageId, `Sync failed: ${message}`);
   }
 }
