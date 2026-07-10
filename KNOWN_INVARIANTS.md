@@ -110,4 +110,41 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 **Example (wrong):** `"next": "14.2.5"` (the version originally installed, before this was caught).
 **Source:** Next.js Security Update, Dec 11 2025 (https://nextjs.org/blog/security-update-2025-12-11).
 
+---
+
+### [Deployment] — `maxDuration` must stay explicit and sized for the current plan
+**Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more Notion blocks).
+**Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + chart sync pipeline needs. Without an explicit `maxDuration`, requests would intermittently 504 (`FUNCTION_INVOCATION_TIMEOUT`) as chart count or Notion page complexity grows, with no code-level error to point at.
+**Example (correct):** `export const maxDuration = 60;` at the top of `route.ts`, next to the other top-level exports.
+**Example (wrong):** Removing this export to "clean up" the file, or leaving it at a stale low value after adding the `generateMetrics` trigger step.
+**Source:** Vercel Functions documentation (https://vercel.com/docs/functions/configuring-functions/duration); added in v0.5.0 alongside the `generateMetrics` orchestration.
+
+---
+
+### [API / External Integrations] — `updateStatus()` must never throw, and never blocks the real sync
+**Rule:** `updateStatus()` wraps its entire body in try/catch and logs (never rethrows) on failure. Nothing in the sync pipeline should ever be made to depend on a status update succeeding.
+**Why:** ⚠️ SILENT FAILURE risk in the *other* direction if this rule is violated — the status block is a nice-to-have UX feature (near-real-time progress text on the Notion page), not the point of the sync. If `updateStatus()` were allowed to throw, a missing `[Status]` block or a transient Notion API hiccup would abort an otherwise-successful chart sync for no good reason.
+**Example (correct):** `updateStatus()`'s only failure mode is a `console.error` and a silent no-op.
+**Example (wrong):** Letting a `findStatusBlock()` failure propagate up and abort the whole `POST` handler.
+**Source:** `route.ts` v0.5.0.
+
+---
+
+### [API / External Integrations] — The `[Status]` block must already exist on the page; it is never auto-created
+**Rule:** `updateStatus()` searches for a block whose text already starts with `[Status]` and updates it in place. It does not create one if none is found — it just logs and skips that update.
+**Why:** Auto-creating a status block would require deciding where on the page to put it and in what format, which is a layout decision that belongs to whoever set up the Notion page, not something the middleware should guess at silently.
+**Example (correct):** Manually add a `[Status]` paragraph or heading_3 block to the page once, anywhere; every future `updateStatus()` call finds and rewrites it.
+**Example (wrong):** Expecting status text to appear on a page that has never had a `[Status]` block added — check the Vercel logs for "No `[Status]` block found on the page" if updates don't seem to be showing up.
+**Source:** `route.ts` v0.5.0; user explicitly requested a dedicated status block over reusing a chart anchor.
+
+---
+
+### [API / External Integrations] — Two Apps Script actions share one URL, selected by `?action=`
+**Rule:** The same `GOOGLE_APPS_SCRIPT_URL` serves both `?action=generateMetrics` (headless import+analysis, returns `{ success, phase?, error? }`) and the default/no-param request (chart export, returns `{ charts: [...] }`). These are two different response shapes from the same endpoint — code reading the response must always know which action it asked for.
+**Why:** ⚠️ SILENT FAILURE if a caller assumes the wrong shape — e.g. treating a `generateMetrics` response as if it had a `charts` array would silently produce `undefined`/empty results rather than an error, since both are valid JSON, just different shapes.
+**Example (correct):** `triggerGenerateMetrics()` checks `data.success`; `fetchChartsFromScript()` checks `Array.isArray(data?.charts)` — each validates the shape it expects.
+**Example (wrong):** Calling the script once and trying to read both `data.success` and `data.charts` off the same response — only one will ever be present per call.
+**Source:** `Notion.gs`'s `doGet(e)` action routing (Portfolio Tracker repo) and `route.ts`'s `triggerGenerateMetrics()` / `fetchChartsFromScript()`, both v0.5.0.
+
+
 

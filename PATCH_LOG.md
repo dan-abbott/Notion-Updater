@@ -4,7 +4,34 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.4.2] — 2026-07-10
+### [0.5.0] — 2026-07-10
+**Type:** Feature
+**Scope:** `app/api/notion-sync/route.ts` (requires paired changes in the Portfolio Tracker Apps Script project — see that repo's PATCH_LOG.md v0.3.2)
+**Summary:** The Notion button now triggers the full pipeline in one click: pull today's data from the slide deck, run the analysis, then sync charts — with live-ish progress feedback written into a `[Status]` block on the Notion page.
+**Details:**
+- Added `export const maxDuration = 60` (Vercel Hobby's configurable ceiling) — the combined pipeline (headless import+analysis trigger, chart fetch, Blob uploads, Notion updates) can run well past the platform's 10s default timeout.
+- Added `triggerGenerateMetrics()`: calls the Apps Script's Web App with `?action=generateMetrics`, which runs `UpdatePortfolio()` + `processPortfolioData()` headlessly (see the paired Apps Script change) and returns `{ success, phase?, error? }`. Throws with the specific failing phase if either step fails.
+- Added `findStatusBlock()` / `updateStatus()`: same recursive-search pattern as chart anchors, but looks for a block starting with `[Status]` and overwrites its text with `[Status] <message>`. Preserves the block's actual type (`heading_3` vs `paragraph`) when updating, since Notion's API requires the update payload's key to match the block's own type. `updateStatus()` never throws — a status-write failure must never abort the actual sync.
+- `POST` handler now sequences: `updateStatus("Pulling in the data...")` → `triggerGenerateMetrics()` → `updateStatus("Updating charts...")` → existing anchor-discovery/chart-fetch/Blob-upload/Notion-update flow → final `updateStatus()` reflecting full success, partial chart failure, or (via the outer catch) an outright failure with the specific error message.
+- Requires a `[Status]` block to already exist somewhere on the Notion page (as a heading_3 or paragraph) — `updateStatus()` logs and no-ops if it can't find one, rather than creating one automatically.
+- Refreshed `apps-script/Code.gs` (the reference copy kept in this repo for convenience) to match the actual current script, which was renamed to `Notion.gs` and gained the `?action=` routing in the Portfolio Tracker repo — the copy here had drifted out of date.
+**Breaking:** No — additive. Existing behavior (chart sync) is unchanged if `generateMetrics` succeeds; the response JSON shape is unchanged.
+
+---
+
+
+**Type:** Fix
+**Scope:** End-to-end verification
+**Summary:** Confirmed the full sync pipeline works in production: Notion button trigger → Vercel middleware discovers `[Chart]` anchors → Apps Script returns chart data as JSON → middleware uploads to Vercel Blob via OIDC → Notion image blocks updated. No further changes required to close out this debugging arc.
+**Details:**
+- Verified with 2 real charts (`Monthly Burn Rate`, `User Growth`): both synced successfully after the `@vercel/blob` OIDC fix in v0.4.2.
+- A `(node:4) [DEP0169] DeprecationWarning: url.parse()` message appears in logs but originates from Next.js/dependency internals, not this codebase (`route.ts` never calls `url.parse()`). Confirmed as informational only — no CVEs apply, no action needed. Noting here so it isn't mistaken for a regression in a future session.
+- Remaining known gaps are documented as `[UNVERIFIED]`/edge cases in `KNOWN_INVARIANTS.md` (e.g. chart-title-mismatch handling) rather than active bugs.
+**Breaking:** No.
+
+---
+
+
 **Type:** Fix
 **Scope:** `package.json`, `.env.example`
 **Summary:** Production run got "Vercel Blob: No token found" even with a Blob store connected, because Vercel's newer stores default to OIDC authentication (no static token at all) and the pinned SDK version predates OIDC support.

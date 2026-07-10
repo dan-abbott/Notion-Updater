@@ -2,9 +2,17 @@ import { NextResponse } from 'next/server';
 import { put } from '@vercel/blob';
 import { Client } from '@notionhq/client';
 
+// Hobby plan's configurable ceiling. The full pipeline (trigger the Apps
+// Script's import+analysis, fetch charts, upload each to Blob, update
+// Notion) can run 15-30+ seconds depending on chart count — comfortably
+// under this, but the default Vercel timeout (10s) is not enough, so this
+// must stay set explicitly. Raise if upgrading to Pro and chart count grows.
+export const maxDuration = 60;
+
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 
 const ANCHOR_PREFIX = '[Chart] ';
+const STATUS_PREFIX = '[Status]';
 
 type AnchorMatch = {
   chartTitle: string;
@@ -54,6 +62,89 @@ async function findAllChartAnchors(blocks: any[], parentId: string): Promise<Anc
   }
 
   return matches;
+}
+
+// Finds a heading_3 or paragraph block whose text starts with "[Status]"
+// anywhere on the page (same recursive-search pattern as chart anchors).
+// Returns both the block id and its actual type, since Notion's update API
+// requires the property key to match the block's own type (heading_3 vs
+// paragraph) — passing the wrong one is rejected.
+async function findStatusBlock(blocks: any[]): Promise<{ id: string; type: 'heading_3' | 'paragraph' } | null> {
+  for (const block of blocks) {
+    if (block.type === 'heading_3' || block.type === 'paragraph') {
+      const text = block[block.type].rich_text
+        .map((rt: any) => rt.plain_text)
+        .join('')
+        .trim();
+      if (text.startsWith(STATUS_PREFIX)) {
+        return { id: block.id, type: block.type };
+      }
+    }
+    if (block.has_children) {
+      const childrenResponse = await notion.blocks.children.list({ block_id: block.id });
+      const found = await findStatusBlock(childrenResponse.results);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// Best-effort status update: writes "[Status] <message>" into whatever
+// block currently starts with "[Status]" on the page. Never throws — a
+// failure here (e.g. no status block exists yet) should never abort the
+// actual sync, since the status text is a nice-to-have, not the point.
+async function updateStatus(pageId: string, message: string): Promise<void> {
+  try {
+    const blocksResponse = await notion.blocks.children.list({ block_id: pageId });
+    const statusBlock = await findStatusBlock(blocksResponse.results);
+    if (!statusBlock) {
+      console.log(`[NOTION SYNC] No "${STATUS_PREFIX}" block found on the page — skipping status update: ${message}`);
+      return;
+    }
+    await notion.blocks.update({
+      block_id: statusBlock.id,
+      [statusBlock.type]: {
+        rich_text: [{ type: 'text', text: { content: `${STATUS_PREFIX} ${message}` } }],
+      },
+    } as any);
+  } catch (err) {
+    console.error('[NOTION SYNC] Failed to update status block (non-fatal):', err);
+  }
+}
+
+// Triggers the Apps Script's headless import+analysis pipeline
+// (UpdatePortfolio + processPortfolioData) via ?action=generateMetrics,
+// and waits for it to finish before this function returns. Distinct from
+// fetchChartsFromScript() below, which calls the same URL with no action
+// param to get chart data instead.
+async function triggerGenerateMetrics(): Promise<void> {
+  const scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
+  if (!scriptUrl) {
+    throw new Error('GOOGLE_APPS_SCRIPT_URL environment variable is not set.');
+  }
+
+  const url = new URL(scriptUrl);
+  url.searchParams.set('action', 'generateMetrics');
+
+  console.log(`[NOTION SYNC] Triggering Apps Script generateMetrics (import + analysis)...`);
+  const scriptResponse = await fetch(url.toString(), { method: 'GET' });
+  const responseText = await scriptResponse.text();
+
+  let data: any;
+  try {
+    data = JSON.parse(responseText);
+  } catch {
+    throw new Error(
+      `Google Apps Script did not return valid JSON for generateMetrics. First 200 chars: ${responseText.slice(0, 200)}`
+    );
+  }
+
+  if (!data.success) {
+    throw new Error(
+      `Apps Script generateMetrics failed during the "${data.phase || 'unknown'}" phase: ${data.error || 'unknown error'}`
+    );
+  }
+  console.log(`[NOTION SYNC] generateMetrics completed successfully.`);
 }
 
 type ScriptChart = {
@@ -147,11 +238,27 @@ export async function POST(request: Request) {
   // and synced in a single run.
   console.log(`[NOTION SYNC] Triggered at ${new Date().toISOString()}`);
 
+  // Hoisted so the outer catch block can also post a status update on
+  // failure, even if the failure happens after pageId is set.
+  let pageId: string | undefined;
+
   try {
-    const pageId = process.env.NOTION_PAGE_ID;
+    pageId = process.env.NOTION_PAGE_ID;
     if (!pageId) {
       throw new Error('NOTION_PAGE_ID environment variable is not set.');
     }
+
+    await updateStatus(pageId, 'Pulling in the data...');
+
+    try {
+      await triggerGenerateMetrics();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      await updateStatus(pageId, `Data import/analysis failed: ${message}`);
+      throw error;
+    }
+
+    await updateStatus(pageId, 'Updating charts...');
 
     console.log(`[NOTION SYNC] Fetching block state for Notion Page ID: ${pageId}...`);
     const blocksResponse = await notion.blocks.children.list({ block_id: pageId });
@@ -187,11 +294,12 @@ export async function POST(request: Request) {
     }
 
     if (pairs.length === 0) {
-      throw new Error(
+      const message =
         `No chart titles matched between the Notion page anchors (${anchors.map(a => a.chartTitle).join(', ') || 'none'}) ` +
         `and the charts returned by the script (${charts.map(c => c.title).join(', ') || 'none'}). ` +
-        `Chart titles in Google Sheets must exactly match the text after "${ANCHOR_PREFIX}" in Notion.`
-      );
+        `Chart titles in Google Sheets must exactly match the text after "${ANCHOR_PREFIX}" in Notion.`;
+      await updateStatus(pageId, `No charts matched — check titles`);
+      throw new Error(message);
     }
 
     // Sync each matched chart independently — one failure shouldn't block the rest.
@@ -214,6 +322,12 @@ export async function POST(request: Request) {
     }
     console.log(`[NOTION SYNC] ✅ Sync run complete. ${succeeded.length}/${pairs.length} chart(s) synced.`);
 
+    if (failed.length === 0) {
+      await updateStatus(pageId, `New charts populated! (${succeeded.length} chart${succeeded.length === 1 ? '' : 's'})`);
+    } else {
+      await updateStatus(pageId, `Completed with ${failed.length}/${pairs.length} chart failure(s) — check logs`);
+    }
+
     return NextResponse.json({
       success: failed.length === 0,
       synced: succeeded,
@@ -225,12 +339,19 @@ export async function POST(request: Request) {
   } catch (error) {
     // 5. Explicitly log errors to the stderr stream
     console.error(`[NOTION SYNC] ❌ Sync failed! Reason:`, error);
-    
+
+    const message = error instanceof Error ? error.message : 'Unknown error occurred';
+    if (pageId) {
+      // Best-effort — updateStatus() never throws, so this is safe even if
+      // the failure happened before any prior status update succeeded.
+      await updateStatus(pageId, `Sync failed: ${message}`);
+    }
+
     // You can also return the error message in the response for debugging 
     // directly inside the Notion webhook response body (Make sure not to leak secrets!)
     return NextResponse.json({ 
       success: false, 
-      error: error instanceof Error ? error.message : "Unknown error occurred" 
+      error: message
     }, { status: 500 });
   }
 }
