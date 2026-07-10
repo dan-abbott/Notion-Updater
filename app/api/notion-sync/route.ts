@@ -4,72 +4,22 @@ import { Client } from '@notionhq/client';
 import { waitUntil } from '@vercel/functions';
 
 // Hobby plan's configurable ceiling. The full pipeline (trigger the Apps
-// Script's import+analysis, fetch charts, upload each to Blob, update
-// Notion) can run 15-30+ seconds depending on chart count — comfortably
-// under this, but the default Vercel timeout (10s) is not enough, so this
-// must stay set explicitly. Raise if upgrading to Pro and chart count grows.
+// Script's import+analysis, fetch mapped chart/table data, upload each
+// chart to Blob, update Notion) can run 15-30+ seconds depending on chart
+// count — comfortably under this, but the default Vercel timeout (10s) is
+// not enough, so this must stay set explicitly. Raise if upgrading to Pro
+// and chart count grows.
 export const maxDuration = 60;
 
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 
-const ANCHOR_PREFIX = '[Chart] ';
 const STATUS_PREFIX = '[Status]';
 
-type AnchorMatch = {
-  chartTitle: string;
-  anchorId: string;
-  parentId: string;
-  targetId?: string;
-};
-
-// Recursively walks the entire block tree under a page and collects every
-// heading_3 / paragraph block whose text starts with "[Chart] ". For each
-// match, also checks whether the immediately-following sibling is already
-// an image block (the thing to overwrite) or not (the thing to insert after).
-//
-// NOTE: This does a live API call (`notion.blocks.children.list`) for every
-// block flagged `has_children`, so a deeply nested page costs one Notion API
-// request per nested container, on every sync run. Keep chart anchors as
-// shallow as possible.
-async function findAllChartAnchors(blocks: any[], parentId: string): Promise<AnchorMatch[]> {
-  const matches: AnchorMatch[] = [];
-
-  for (let i = 0; i < blocks.length; i++) {
-    const block = blocks[i];
-
-    if (block.type === 'heading_3' || block.type === 'paragraph') {
-      const text = block[block.type].rich_text
-        .map((rt: any) => rt.plain_text)
-        .join('')
-        .trim();
-
-      if (text.startsWith(ANCHOR_PREFIX)) {
-        const chartTitle = text.slice(ANCHOR_PREFIX.length).trim();
-        const nextBlock = blocks[i + 1];
-        matches.push({
-          chartTitle,
-          anchorId: block.id,
-          parentId,
-          targetId: nextBlock?.type === 'image' ? nextBlock.id : undefined,
-        });
-      }
-    }
-
-    if (block.has_children) {
-      const childrenResponse = await notion.blocks.children.list({ block_id: block.id });
-      const nested = await findAllChartAnchors(childrenResponse.results, block.id);
-      matches.push(...nested);
-    }
-  }
-
-  return matches;
-}
-
 // Finds a heading_3 or paragraph block whose text starts with "[Status]"
-// anywhere on the page (same recursive-search pattern as chart anchors).
-// Returns both the block id and its actual type, since Notion's update API
-// requires the property key to match the block's own type (heading_3 vs
-// paragraph) — passing the wrong one is rejected.
+// anywhere on the page. This is the ONLY thing still found by text search —
+// charts and table rows are addressed directly by block ID via the
+// Mapping sheet (see fetchMappedDataFromScript()), with no page-tree
+// searching or text-anchor matching involved at all.
 async function findStatusBlock(blocks: any[]): Promise<{ id: string; type: 'heading_3' | 'paragraph' } | null> {
   for (const block of blocks) {
     if (block.type === 'heading_3' || block.type === 'paragraph') {
@@ -115,9 +65,7 @@ async function updateStatus(pageId: string, message: string): Promise<void> {
 
 // Triggers the Apps Script's headless import+analysis pipeline
 // (UpdatePortfolio + processPortfolioData) via ?action=generateMetrics,
-// and waits for it to finish before this function returns. Distinct from
-// fetchChartsFromScript() below, which calls the same URL with no action
-// param to get chart data instead.
+// and waits for it to finish before this function returns.
 async function triggerGenerateMetrics(): Promise<void> {
   const scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
   if (!scriptUrl) {
@@ -148,29 +96,32 @@ async function triggerGenerateMetrics(): Promise<void> {
   console.log(`[NOTION SYNC] generateMetrics completed successfully.`);
 }
 
-type ScriptChart = {
-  title: string;
+type MappedChart = {
+  blockId: string;
   imageBase64: string;
 };
 
-// Fetches ALL charts in one call. The Apps Script's doGet no longer talks to
-// Notion or ImgBB at all — it just exports every chart on the sheet as a
-// base64-encoded PNG and returns them as JSON: { charts: [{ title, imageBase64 }] }.
-// Vercel Blob (via `put` below) is now the only image host in this system.
-async function fetchChartsFromScript(): Promise<ScriptChart[]> {
+type MappedTableRow = {
+  blockId: string;
+  values: string[];
+};
+
+// Fetches everything the Apps Script's "Mapping" sheet points at, already
+// resolved: chart images ready to upload, and table row values ready to
+// write. No anchor text, no title matching — every item already carries
+// the exact Notion block ID it belongs to (see the Mapping sheet in the
+// Portfolio Tracker repo for how those IDs get in there — copied manually
+// from Notion once per block).
+async function fetchMappedDataFromScript(): Promise<{ tableRows: MappedTableRow[]; charts: MappedChart[] }> {
   const scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
   if (!scriptUrl) {
     throw new Error('GOOGLE_APPS_SCRIPT_URL environment variable is not set.');
   }
 
-  console.log(`[NOTION SYNC] Fetching all charts from Google Apps Script...`);
+  console.log(`[NOTION SYNC] Fetching mapped chart/table data from Google Apps Script...`);
   const scriptResponse = await fetch(scriptUrl, { method: 'GET' });
-  if (!scriptResponse.ok) {
-    const text = await scriptResponse.text().catch(() => '');
-    throw new Error(`Google Apps Script responded with status ${scriptResponse.status}: ${text}`);
-  }
-
   const responseText = await scriptResponse.text();
+
   let data: any;
   try {
     data = JSON.parse(responseText);
@@ -181,62 +132,56 @@ async function fetchChartsFromScript(): Promise<ScriptChart[]> {
       `than running the script directly. First 200 chars of response: ${responseText.slice(0, 200)}`
     );
   }
-  if (!Array.isArray(data?.charts)) {
-    throw new Error(`Google Apps Script response did not contain a "charts" array. Received: ${JSON.stringify(data).slice(0, 300)}`);
+  if (!Array.isArray(data?.tableRows) || !Array.isArray(data?.charts)) {
+    throw new Error(`Google Apps Script response missing "tableRows"/"charts" arrays. Received: ${JSON.stringify(data).slice(0, 300)}`);
   }
-  console.log(`[NOTION SYNC] Script returned ${data.charts.length} chart(s): ${data.charts.map((c: ScriptChart) => c.title).join(', ')}`);
-  return data.charts;
+  console.log(`[NOTION SYNC] Script returned ${data.charts.length} chart(s) and ${data.tableRows.length} table row(s).`);
+  return data;
 }
 
-// Uploads one chart's base64 PNG to Vercel Blob, then updates or inserts the
-// corresponding Notion image block. Throws on failure — caller decides
-// whether one chart's failure should stop the whole run.
-async function syncOneChart(anchor: AnchorMatch, chart: ScriptChart): Promise<void> {
-  const { chartTitle, anchorId, parentId, targetId } = anchor;
-
+// Uploads one chart's base64 PNG to Vercel Blob, then updates the Notion
+// image block directly by its known block ID. Always an update — since the
+// block ID came from an existing block in Notion, there's no "insert if
+// missing" branch to handle anymore.
+async function syncOneMappedChart(chart: MappedChart): Promise<void> {
   const imageBuffer = Buffer.from(chart.imageBase64, 'base64');
-  console.log(`[NOTION SYNC] [${chartTitle}] Decoded image buffer (${imageBuffer.length} bytes).`);
+  console.log(`[NOTION SYNC] [chart ${chart.blockId}] Decoded image buffer (${imageBuffer.length} bytes).`);
 
   const timestamp = new Date().getTime();
-  const slug = chartTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-  console.log(`[NOTION SYNC] [${chartTitle}] Uploading to Vercel Blob...`);
-  const { url: publicImageUrl } = await put(`charts/${slug}-${timestamp}.png`, imageBuffer, {
+  console.log(`[NOTION SYNC] [chart ${chart.blockId}] Uploading to Vercel Blob...`);
+  const { url: publicImageUrl } = await put(`charts/${chart.blockId}-${timestamp}.png`, imageBuffer, {
     access: 'public',
     contentType: 'image/png',
   });
-  console.log(`[NOTION SYNC] [${chartTitle}] Blob upload complete. URL: ${publicImageUrl}`);
+  console.log(`[NOTION SYNC] [chart ${chart.blockId}] Blob upload complete. URL: ${publicImageUrl}`);
 
-  if (targetId) {
-    console.log(`[NOTION SYNC] [${chartTitle}] Updating existing image Block ID: ${targetId}...`);
-    await notion.blocks.update({
-      block_id: targetId,
-      image: {
-        external: { url: publicImageUrl },
-      },
-    });
-  } else {
-    console.log(`[NOTION SYNC] [${chartTitle}] No existing image block found; appending new image after anchor ${anchorId}...`);
-    await notion.blocks.children.append({
-      block_id: parentId,
-      after: anchorId,
-      children: [
-        {
-          object: 'block',
-          type: 'image',
-          image: {
-            type: 'external',
-            external: { url: publicImageUrl },
-          },
-        },
-      ],
-    });
-  }
+  await notion.blocks.update({
+    block_id: chart.blockId,
+    image: {
+      external: { url: publicImageUrl },
+    },
+  });
+}
+
+// Overwrites one Notion table_row block's cells with fresh values, by its
+// known block ID. Column count must match the row's existing width —
+// Notion's API enforces this itself and throws a validation error if not,
+// which propagates up per-row via Promise.allSettled (one bad row doesn't
+// block the rest).
+async function syncOneMappedTableRow(row: MappedTableRow): Promise<void> {
+  await notion.blocks.update({
+    block_id: row.blockId,
+    table_row: {
+      cells: row.values.map(v => [{ type: 'text' as const, text: { content: v } }]),
+    },
+  } as any);
+  console.log(`[NOTION SYNC] [row ${row.blockId}] Updated with ${row.values.length} value(s).`);
 }
 
 export async function POST(request: Request) {
   // 1. Log the initiation. The Notion button sends no useful payload —
-  // this is a bare trigger — so every chart on the page is discovered
-  // and synced in a single run.
+  // this is a bare trigger — so every chart/table row the Mapping sheet
+  // points at is resolved and synced in a single run.
   console.log(`[NOTION SYNC] Triggered at ${new Date().toISOString()}`);
 
   const pageId = process.env.NOTION_PAGE_ID;
@@ -249,20 +194,16 @@ export async function POST(request: Request) {
 
   // IMPORTANT: Notion's button-triggered webhook has its own (short)
   // response-wait timeout that is shorter than this pipeline's total
-  // runtime (generateMetrics + chart fetch + Blob uploads + Notion
-  // updates routinely takes 15-30+ seconds). If we don't respond until
-  // the whole pipeline finishes, Notion reports "webhook request timed
-  // out" to the user even though the pipeline itself completes
-  // successfully moments later — which is exactly what was observed in
-  // production before this fix.
-  //
-  // The fix: post the first status update synchronously (fast, so it's
-  // visibly there almost immediately), acknowledge Notion's webhook right
-  // away, then keep running the actual pipeline in the background via
-  // waitUntil() — which extends this function's lifetime past the
-  // response up to maxDuration, independent of whether Notion is still
-  // listening. All progress after this point is only visible through the
-  // [Status] block, not through Notion's own button UI.
+  // runtime. If we don't respond until the whole pipeline finishes, Notion
+  // reports "webhook request timed out" even though the pipeline itself
+  // completes successfully moments later. The fix: post the first status
+  // update synchronously (fast, so it's visibly there almost immediately),
+  // acknowledge Notion's webhook right away, then keep running the actual
+  // pipeline in the background via waitUntil() — which extends this
+  // function's lifetime past the response up to maxDuration, independent
+  // of whether Notion is still listening. All progress after this point is
+  // only visible through the [Status] block, not through Notion's own
+  // button UI.
   await updateStatus(pageId, 'Pulling in the data...');
 
   waitUntil(runSyncPipeline(pageId));
@@ -285,75 +226,50 @@ async function runSyncPipeline(pageId: string): Promise<void> {
       return;
     }
 
-    await updateStatus(pageId, 'Updating charts...');
+    await updateStatus(pageId, 'Updating charts and tables...');
 
-    console.log(`[NOTION SYNC] Fetching block state for Notion Page ID: ${pageId}...`);
-    const blocksResponse = await notion.blocks.children.list({ block_id: pageId });
-    const anchors = await findAllChartAnchors(blocksResponse.results, pageId);
-    console.log(`[NOTION SYNC] Found ${anchors.length} chart anchor(s) in Notion: ${anchors.map(a => a.chartTitle).join(', ') || '(none)'}`);
+    const { tableRows, charts } = await fetchMappedDataFromScript();
 
-    const charts = await fetchChartsFromScript();
+    const chartResults = await Promise.allSettled(charts.map(c => syncOneMappedChart(c)));
+    const rowResults = await Promise.allSettled(tableRows.map(r => syncOneMappedTableRow(r)));
 
-    // Match each anchor to a chart returned by the script, by exact title.
-    // Anchors with no matching chart, and charts with no matching anchor,
-    // are logged and skipped rather than treated as fatal errors — a
-    // one-sided mismatch on a given run shouldn't block the charts that
-    // do line up.
-    const pairs: { anchor: AnchorMatch; chart: ScriptChart }[] = [];
-    const unmatchedAnchors: string[] = [];
-    for (const anchor of anchors) {
-      const chart = charts.find(c => c.title === anchor.chartTitle);
-      if (chart) {
-        pairs.push({ anchor, chart });
-      } else {
-        unmatchedAnchors.push(anchor.chartTitle);
-      }
-    }
-    const unmatchedCharts = charts
-      .filter(c => !anchors.some(a => a.chartTitle === c.title))
-      .map(c => c.title);
-
-    if (unmatchedAnchors.length > 0) {
-      console.log(`[NOTION SYNC] ⚠️ Notion anchor(s) with no matching chart from the script: ${unmatchedAnchors.join(', ')}`);
-    }
-    if (unmatchedCharts.length > 0) {
-      console.log(`[NOTION SYNC] ⚠️ Chart(s) from the script with no matching Notion anchor: ${unmatchedCharts.join(', ')}`);
-    }
-
-    if (pairs.length === 0) {
-      const message =
-        `No chart titles matched between the Notion page anchors (${anchors.map(a => a.chartTitle).join(', ') || 'none'}) ` +
-        `and the charts returned by the script (${charts.map(c => c.title).join(', ') || 'none'}). ` +
-        `Chart titles in Google Sheets must exactly match the text after "${ANCHOR_PREFIX}" in Notion.`;
-      await updateStatus(pageId, `No charts matched — check titles`);
-      console.error(`[NOTION SYNC] ❌ Sync failed! Reason:`, message);
-      return;
-    }
-
-    // Sync each matched chart independently — one failure shouldn't block the rest.
-    const results = await Promise.allSettled(pairs.map(({ anchor, chart }) => syncOneChart(anchor, chart)));
-
-    const succeeded = results
-      .map((r, i) => ({ r, title: pairs[i].anchor.chartTitle }))
-      .filter(({ r }) => r.status === 'fulfilled')
-      .map(({ title }) => title);
-    const failed = results
-      .map((r, i) => ({ r, title: pairs[i].anchor.chartTitle }))
+    const chartFailed = chartResults
+      .map((r, i) => ({ r, blockId: charts[i].blockId }))
       .filter(({ r }) => r.status === 'rejected')
-      .map(({ r, title }) => ({
-        chartTitle: title,
+      .map(({ r, blockId }) => ({
+        blockId,
+        error: r.status === 'rejected' ? (r.reason instanceof Error ? r.reason.message : String(r.reason)) : '',
+      }));
+    const rowFailed = rowResults
+      .map((r, i) => ({ r, blockId: tableRows[i].blockId }))
+      .filter(({ r }) => r.status === 'rejected')
+      .map(({ r, blockId }) => ({
+        blockId,
         error: r.status === 'rejected' ? (r.reason instanceof Error ? r.reason.message : String(r.reason)) : '',
       }));
 
-    if (failed.length > 0) {
-      console.error(`[NOTION SYNC] ⚠️ ${failed.length}/${pairs.length} chart(s) failed:`, failed);
+    if (chartFailed.length > 0) {
+      console.error(`[NOTION SYNC] ⚠️ ${chartFailed.length}/${charts.length} chart(s) failed:`, chartFailed);
     }
-    console.log(`[NOTION SYNC] ✅ Sync run complete. ${succeeded.length}/${pairs.length} chart(s) synced.`);
+    if (rowFailed.length > 0) {
+      console.error(`[NOTION SYNC] ⚠️ ${rowFailed.length}/${tableRows.length} table row(s) failed:`, rowFailed);
+    }
+    console.log(
+      `[NOTION SYNC] ✅ Sync run complete. ${charts.length - chartFailed.length}/${charts.length} chart(s), ` +
+      `${tableRows.length - rowFailed.length}/${tableRows.length} table row(s) synced.`
+    );
 
-    if (failed.length === 0) {
-      await updateStatus(pageId, `New charts populated! (${succeeded.length} chart${succeeded.length === 1 ? '' : 's'})`);
+    const totalFailed = chartFailed.length + rowFailed.length;
+    const chartsSynced = charts.length - chartFailed.length;
+    const rowsSynced = tableRows.length - rowFailed.length;
+
+    if (totalFailed === 0) {
+      await updateStatus(
+        pageId,
+        `New charts populated! (${chartsSynced} chart${chartsSynced === 1 ? '' : 's'}, ${rowsSynced} row${rowsSynced === 1 ? '' : 's'})`
+      );
     } else {
-      await updateStatus(pageId, `Completed with ${failed.length}/${pairs.length} chart failure(s) — check logs`);
+      await updateStatus(pageId, `Completed with ${totalFailed} failure(s) — check logs`);
     }
   } catch (error) {
     console.error(`[NOTION SYNC] ❌ Sync failed! Reason:`, error);

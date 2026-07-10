@@ -4,7 +4,34 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.5.1] — 2026-07-10
+### [0.6.0] — 2026-07-10
+**Type:** Refactor
+**Scope:** `app/api/notion-sync/route.ts` (requires paired changes in the Portfolio Tracker Apps Script project — see that repo's PATCH_LOG.md v0.4.0)
+**Summary:** Retired ALL page-text anchor matching for charts and tables (`[Chart] Title`, `[Table] Label`), replacing it with a manually-maintained "Mapping" sheet in Google Sheets that pairs exact Notion block IDs with their data sources. User's motivation: Notion gives very little control over making anchor text small/unobtrusive, and wanted zero visible plumbing on the page.
+**Details:**
+- Removed `findAllChartAnchors()`, `findAllTableAnchors()`, `ANCHOR_PREFIX`, `TABLE_ANCHOR_PREFIX`, and all title/label-matching logic (unmatched-anchor tracking, chart-vs-table pairing, insert-vs-update branching for charts). The `[Status]` block is now the ONLY thing still found by text search on the page — everything else is addressed directly by block ID.
+- `fetchMappedDataFromScript()` replaces `fetchChartsFromScript()`/`fetchTablesFromScript()`: one call to the Apps Script (no `?action=` needed — this is now the default action) returns `{ charts: [{ blockId, imageBase64 }], tableRows: [{ blockId, values }] }`, fully resolved and ready to write.
+- `syncOneMappedChart()` replaces `syncOneChart()`: always an update (never an insert) since the block ID came from an existing Notion block — this eliminates the whole "does an image block already exist after the anchor" check entirely.
+- `syncOneMappedTableRow()` replaces `syncOneTable()`: a single `notion.blocks.update()` per row by block ID. No more table-width pre-validation, no more "find the table, preserve the header, delete+reinsert data rows" dance — Notion's own API validates column count and throws if it doesn't match, which surfaces per-row via `Promise.allSettled` same as before.
+**Breaking:** Yes, in the sense that this is a different system, not a compatible extension — any page still using `[Chart]`/`[Table]` anchor text is inert now; every chart and table row must be re-registered in the Mapping sheet with real Notion block IDs before this version will do anything for it. See the paired Apps Script repo's invariants for the Mapping sheet's exact expected layout.
+
+---
+
+
+**Type:** Feature
+**Scope:** `app/api/notion-sync/route.ts` (requires paired changes in the Portfolio Tracker Apps Script project — see that repo's PATCH_LOG.md v0.3.4)
+**Summary:** Added the ability to mirror numeric data from named ranges in Google Sheets into native Notion table blocks, following the same anchor-block convention already used for charts — one row per studio, header preserved, row count free to grow/shrink.
+**Details:**
+- Added `findAllTableAnchors()`: same recursive-search pattern as `findAllChartAnchors()`, but looks for `[Table] <label>` anchors and requires the immediately-following sibling to be an actual `table` block (skips with a warning, not an error, if it isn't — the anchor might just be misplaced).
+- Added `fetchTablesFromScript()`: calls the Apps Script with `?action=exportTables`, returns `{ label, rows: string[][] }[]` — each `rows` array is ONLY the data rows for that table (no header).
+- Added `syncOneTable()`: retrieves the target table block's `table_width`, validates every incoming row has exactly that many columns (throws a clear, table-specific error if not), then **always preserves the table's first existing row untouched** (the header) and replaces every row after it — delete all old data rows, append new ones built from the named range. This is what lets studio count change over time without needing column-meaning awareness on the middleware side.
+- `runSyncPipeline()` now runs chart sync, then table sync, with its own status updates at each stage, and a combined final status reflecting total chart + table failures.
+- Anchors with no matching named range (and vice versa) are logged and skipped, same non-fatal-mismatch philosophy as chart anchors.
+**Breaking:** No — additive. A page with no `[Table]` anchors behaves exactly as before (table sync step is a no-op, no additional API calls made). Requires the paired Apps Script change (`?action=exportTables`) to actually return data — without it, `fetchTablesFromScript()` throws and table sync fails as a whole (but this only happens if `[Table]` anchors are present).
+
+---
+
+
 **Type:** Fix
 **Scope:** `app/api/notion-sync/route.ts`, `package.json`
 **Summary:** Notion reported "webhook request timed out" on every button click, even though the pipeline itself completed successfully (confirmed by the `[Status]` block continuing to update after the error appeared). Root cause: Notion's button-webhook has its own response-wait timeout, shorter than this pipeline's total runtime. Fixed by responding to Notion immediately and running the actual pipeline in the background.
