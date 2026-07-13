@@ -200,9 +200,9 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
-### [API / External Integrations] — Table row column count is validated by Notion itself, not pre-checked by this code
-**Rule:** `syncOneMappedTableRow()` sends the Mapping sheet's resolved values straight to `notion.blocks.update()` without first checking them against the target row's existing column count. If they don't match, Notion's API rejects the update and the error propagates for that row only (via `Promise.allSettled`), same as any other per-row failure.
-**Why:** Since v0.6.0 there's no "find the table, check its width" step anymore — the block ID already points at a specific existing row, and Notion enforces its own shape constraints. Re-adding a pre-check would mean an extra `blocks.retrieve()` call per row for something the platform already validates for free.
-**Example (correct):** Let Notion's API return the validation error; log and count it as a per-row failure.
-**Example (wrong):** Adding back a `blocks.retrieve()` + manual length check before every row update — redundant API calls for no additional safety.
-**Source:** `route.ts` v0.6.0, simplification following the switch to direct block-ID addressing.
+### [API / External Integrations] — A blank Mapping cell means "leave unchanged," never "omit this column"
+**Rule:** In a `Row Block ID` mapping row, a blank cell between two filled ones must be preserved as a `null` entry in `sourceCellRefs`/`values`, never filtered out of the array. Only trailing blanks (nothing meaningful after them) get trimmed. `syncOneMappedTableRow()` always fetches the row's current cells via `notion.blocks.retrieve()` first, then merges: any position with a real value overwrites, any `null`/missing position keeps the existing text. It can never send Notion a `cells` array shorter than the table's actual width.
+**Why:** ⚠️ SILENT FAILURE turned into a loud one, which is the correct direction here — omitting a blank cell instead of preserving its position shifts every later column left, producing too few values for the row's width and triggering Notion's `"Number of cells in table row must match the table width"` validation error on every sync. This was an actual production bug, not a hypothetical.
+**Example (correct):** Mapping row with `C5, , E5` → `sourceCellRefs = ["C5", null, "E5"]` → synced row overwrites columns 1 and 3, leaves column 2 exactly as it was in Notion.
+**Example (wrong):** Filtering blanks before building `sourceCellRefs` (the original, buggy behavior) — `"C5, , E5"` becomes `["C5", "E5"]`, silently writing E5's value into column 2 instead of column 3, and failing Notion's width check if the table has more than 2 columns. Also wrong: sending a `cells` array shorter than the table's width and relying on Notion's own validation error instead of fetching+merging first — this was tried (v0.6.0) and doesn't allow partial updates at all, only full-width-or-nothing.
+**Source:** User-reported production error; fixed in `lib/generateConnectorFiles.ts` / `route.ts` v0.8.2.

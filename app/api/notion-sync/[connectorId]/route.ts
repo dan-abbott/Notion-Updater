@@ -101,7 +101,9 @@ type MappedChart = {
 
 type MappedTableRow = {
   blockId: string;
-  values: string[];
+  // A value of `null`, or a missing trailing index, means "leave this
+  // column's current Notion value unchanged" — see syncOneMappedTableRow().
+  values: (string | null)[];
 };
 
 // Fetches everything this connector's Apps Script "Mapping" sheet points
@@ -160,17 +162,36 @@ async function syncOneMappedChart(chart: MappedChart): Promise<void> {
   });
 }
 
-// Overwrites one Notion table_row block's cells with fresh values, by its
-// known block ID. Column count must match the row's existing width —
-// Notion's API enforces this itself and throws a validation error if not.
+// Overwrites one Notion table_row block's cells, by its known block ID —
+// but only the columns actually provided. Notion requires every update to
+// specify a value for EVERY column matching the table's exact width, so a
+// value of `null` (or simply a shorter values array) can't just be
+// omitted — that would shift later columns left and fail Notion's
+// validation ("Number of cells in table row must match the table width").
+// Instead, the row's current cells are fetched first, and only the
+// positions actually provided in `values` overwrite them; everything else
+// keeps its existing content. This costs one extra API call per row, which
+// is a fine tradeoff at the row counts this handles (tens, not thousands).
 async function syncOneMappedTableRow(row: MappedTableRow): Promise<void> {
+  const existing = await notion.blocks.retrieve({ block_id: row.blockId }) as any;
+  const existingCells: string[] = (existing.table_row?.cells ?? []).map((cell: any[]) =>
+    cell.map((rt: any) => rt.plain_text).join('')
+  );
+
+  const finalValues = existingCells.map((existingText, i) => {
+    const provided = row.values[i];
+    return provided === null || provided === undefined ? existingText : provided;
+  });
+
   await notion.blocks.update({
     block_id: row.blockId,
     table_row: {
-      cells: row.values.map(v => [{ type: 'text' as const, text: { content: v } }]),
+      cells: finalValues.map(v => [{ type: 'text' as const, text: { content: v } }]),
     },
   } as any);
-  console.log(`[NOTION SYNC] [row ${row.blockId}] Updated with ${row.values.length} value(s).`);
+
+  const changedCount = row.values.filter(v => v !== null && v !== undefined).length;
+  console.log(`[NOTION SYNC] [row ${row.blockId}] Updated ${changedCount}/${existingCells.length} column(s), left the rest unchanged.`);
 }
 
 export async function POST(request: Request, { params }: { params: { connectorId: string } }) {

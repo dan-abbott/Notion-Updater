@@ -39,6 +39,18 @@ function extractNotionIdClient(input: string): string | null {
   return null;
 }
 
+// Splits a comma-separated cell list, preserving blank entries as null
+// ("leave this column unchanged") while trimming only trailing blanks —
+// mirrors the Apps Script side's readMappingSheet() exactly.
+function parseSourceCells(input: string): (string | null)[] {
+  const parts = input.split(',').map(s => s.trim());
+  let lastNonEmpty = -1;
+  parts.forEach((p, i) => {
+    if (p) lastNonEmpty = i;
+  });
+  return parts.slice(0, lastNonEmpty + 1).map(p => (p ? p : null));
+}
+
 export default function SetupPage() {
   const [step, setStep] = useState(1);
 
@@ -153,7 +165,12 @@ export default function SetupPage() {
         .map(([blockId, d]) => ({
           blockId,
           tabName: d.tabName.trim(),
-          sourceCells: d.sourceCells.split(',').map(s => s.trim()).filter(Boolean),
+          // A blank between commas (e.g. "C5, , E5") means "leave that
+          // column unchanged" — preserve its position as null rather than
+          // filtering it out, which would shift later columns left.
+          // Trailing blanks (nothing after them) are trimmed, so you don't
+          // need filler commas past the last column you care about.
+          sourceCells: parseSourceCells(d.sourceCells),
         }));
 
       const res = await fetch('/api/setup/generate-mapping', {
@@ -282,7 +299,8 @@ export default function SetupPage() {
               <p className="hint">
                 For image blocks, click <strong>Add as chart</strong> and fill in the sheet tab and exact chart
                 title. For table row blocks, click <strong>Add as table row</strong> and fill in the sheet tab
-                and source cells (e.g. <code>C5, D5, E5, F5</code>).
+                and source cells (e.g. <code>C5, D5, E5, F5</code>). Leave a slot blank between commas
+                (e.g. <code>C5, , E5</code>) to leave that column's current value in Notion untouched.
               </p>
               <div className="blockList">
                 {blocks.map(block => (
@@ -336,7 +354,7 @@ export default function SetupPage() {
                         />
                         <input
                           type="text"
-                          placeholder="Source cells, e.g. C5, D5, E5, F5"
+                          placeholder="Source cells, e.g. C5, D5, E5, F5 (leave a slot blank, e.g. C5, , E5, to keep that column unchanged)"
                           value={tableRowDetails[block.id].sourceCells}
                           onChange={e =>
                             setTableRowDetails(prev => ({ ...prev, [block.id]: { ...prev[block.id], sourceCells: e.target.value } }))

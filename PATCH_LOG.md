@@ -4,7 +4,21 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.8.1] — 2026-07-10
+### [0.8.2] — 2026-07-10
+**Type:** Fix
+**Scope:** `lib/generateConnectorFiles.ts`, `apps-script/Code.gs`, `app/api/notion-sync/[connectorId]/route.ts`, `app/setup/page.tsx`
+**Summary:** User reported `"Number of cells in table row must match the table width of the parent table"` from Notion's API. Root cause: leaving a Mapping sheet cell blank to "skip" a column made `readMappingSheet()` omit it from the list entirely, shifting every later column left and producing too few values for the row's actual width. Fixed by treating a blank as "leave this column's current value unchanged" instead of "remove it from the list."
+**Details:**
+- `readMappingSheet()` (embedded in the generated `Notion.gs`) now preserves blank cell positions as `null` rather than filtering them out — only *trailing* blanks (nothing meaningful after them) get trimmed, so filler commas aren't needed past the last column actually specified.
+- `exportMappedDataAsJson()` resolves a `null` ref straight to a `null` value (skip signal) instead of trying to read it as a cell reference.
+- `syncOneMappedTableRow()` (middleware) now fetches the row's current cells via `notion.blocks.retrieve()` first, then merges: any position with a real value overwrites, any `null`/missing position keeps the existing text. This is what actually satisfies Notion's exact-column-count requirement while still allowing partial updates — costs one extra API call per row, negligible at this system's scale (tens of rows, not thousands).
+- Wizard's table-row input and its client-side parser (`parseSourceCells()`) updated to match: a blank between commas (e.g. `C5, , E5`) is preserved as a skip, not silently dropped.
+- Regenerated `apps-script/Code.gs` (reference copy) and the Portfolio Tracker's `Notion.gs` with this fix.
+**Breaking:** No — existing Mapping sheets with no blank cells behave identically. Sheets that previously relied on (accidentally) filtered blanks now behave correctly instead of erroring.
+
+---
+
+
 **Type:** Feature
 **Scope:** `lib/notion.ts`, `app/api/setup/list-blocks/route.ts`, `app/api/notion-sync/[connectorId]/route.ts`, `app/setup/page.tsx`
 **Summary:** Notion's API returns the same generic "object not found" error whether a page genuinely doesn't exist or it exists but was never shared with the integration — the latter being, by far, the most common cause when someone's just set up a new connector. Added specific detection for this, plus an explicit reminder in the wizard, so this doesn't cost anyone debugging time.

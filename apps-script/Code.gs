@@ -76,9 +76,14 @@ function runPreExportStep() {
  *     - Column A == "Row Block ID" AND column B non-empty
  *         -> a table row mapping. B = the Notion table_row block ID.
  *            C = the sheet tab this row's data comes from.
- *            Every non-empty cell from column D onward is a source cell
- *            reference (e.g. "C5") on that tab, in left-to-right order —
- *            this determines column order in the Notion row.
+ *            Columns D onward are source cell references (e.g. "C5") on
+ *            that tab, in left-to-right order, matching the Notion row's
+ *            columns exactly. A BLANK cell in the middle (e.g. D and F
+ *            filled, E left empty) means "leave that column's current
+ *            Notion value unchanged" — it does NOT shift later columns
+ *            left. Only trailing blanks (nothing after them) are trimmed
+ *            entirely, so you don't need filler commas past the last
+ *            column you actually care about.
  *     - Column A == "Block ID" AND column B non-empty
  *         -> a chart mapping. B = the Notion image block ID.
  *            C = the sheet tab this chart lives on.
@@ -108,11 +113,21 @@ function readMappingSheet() {
 
     if (label === 'Row Block ID') {
       const tabName = String(row[2]).trim();
-      const sourceCellRefs = [];
+
+      // Preserve blank positions (null = "leave unchanged") rather than
+      // filtering them out — filtering would shift every later column
+      // left and silently produce too few cells for the row's actual
+      // width. Only trim trailing blanks (nothing meaningful after them).
+      let lastNonEmptyCol = -1;
       for (let c = 3; c < row.length; c++) {
-        const cellRef = String(row[c]).trim();
-        if (cellRef) sourceCellRefs.push(cellRef);
+        if (String(row[c]).trim()) lastNonEmptyCol = c;
       }
+      const sourceCellRefs = [];
+      for (let c = 3; c <= lastNonEmptyCol; c++) {
+        const cellRef = String(row[c]).trim();
+        sourceCellRefs.push(cellRef ? cellRef : null);
+      }
+
       if (!tabName || sourceCellRefs.length === 0) {
         const warning = 'Row Block ID "' + blockId + '" (Mapping row ' + (i + 1) + ') is missing a sheet tab or source cells — skipped.';
         Logger.log('⚠️ ' + warning);
@@ -167,7 +182,7 @@ function exportMappedDataAsJson() {
     try {
       const sheet = getSheet(mapping.tabName);
       const values = mapping.sourceCellRefs.map(function (ref) {
-        return sheet.getRange(ref).getDisplayValue();
+        return ref === null ? null : sheet.getRange(ref).getDisplayValue();
       });
       tableRows.push({ blockId: mapping.blockId, values: values });
     } catch (err) {
