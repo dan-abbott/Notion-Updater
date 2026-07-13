@@ -2,7 +2,7 @@
 
 Non-negotiable rules and gotchas for anyone working on this codebase.
 
-Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion API (`@notionhq/client`), Vercel Blob (`@vercel/blob`), and a Google Apps Script web app as the chart/table data source.
+Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@notionhq/client`), Vercel Blob (`@vercel/blob`), and per-connector Google Apps Script web apps as the chart/table data source. Supports many independent connectors (each its own Notion page + Apps Script pair), registered in `connectors.json`. Includes a setup wizard (`/setup`) for onboarding new connectors, in addition to the core sync API route.
 
 ---
 
@@ -69,12 +69,57 @@ Stack: Next.js 14 (App Router) API route, deployed on Vercel, integrating Notion
 
 ---
 
-### [File / Module Conventions] — This is a single-route App Router project, not a full app
-**Rule:** There is intentionally no `page.tsx`, no UI routes — just `app/layout.tsx` (required scaffolding) and `app/api/notion-sync/route.ts`. Don't add pages/routes unless the project's scope actually changes to include a UI.
-**Why:** Keeps the deploy surface minimal and avoids introducing routes that aren't needed for a pure webhook-receiver middleware.
-**Example (correct):** Adding a new API route under `app/api/<name>/route.ts` for a new webhook.
-**Example (wrong):** Adding `app/page.tsx` "just in case" — increases build surface with no purpose.
-**Source:** Project scope as described by the user (middleware triggered by a Notion button push).
+### [File / Module Conventions] — This app now has a real UI (`/setup`) alongside its API routes; keep them clearly separated
+**Rule:** `app/setup/` is the only page-rendering route in this project — everything else is API routes under `app/api/`. Don't blur this: the setup wizard is a one-time/occasional tool for onboarding new connectors, not a dashboard for operating them; resist the urge to grow it into a general admin panel unless that's a deliberate, separate decision.
+**Why:** This project was originally (and mostly still is) a pure webhook-receiver middleware with zero UI. Adding `/setup` was a deliberate, scoped exception to solve one specific pain point (manual block-ID hunting) — not a signal to start building arbitrary UI here.
+**Example (correct):** `/setup` handles connector onboarding only; day-to-day sync behavior lives entirely in `/api/notion-sync/[connectorId]`.
+**Example (wrong):** Adding a `/dashboard` page to show sync history "while we're at it" — a different scope decision that should be made deliberately, not organically.
+**Source:** User-directed scope for the setup wizard; supersedes the prior "single-route project" invariant now that `/setup` exists.
+
+---
+
+### [API / External Integrations] — Connectors are registered in `connectors.json`, looked up per-request by URL segment
+**Rule:** `getConnectorConfig(connectorId)` (`lib/connectors.ts`) is the only source of truth for which Notion page and Apps Script URL a given sync request targets. The `connectorId` comes from the dynamic route segment (`/api/notion-sync/[connectorId]`), never from a request body or a single global env var.
+**Why:** ⚠️ SILENT FAILURE if a new connector's button is pointed at a URL with a typo'd or missing connector ID — `getConnectorConfig()` throws with a list of known connector IDs specifically so this fails loud and specific rather than silently reusing another connector's config or a stale env var.
+**Example (correct):** Team B's Notion button posts to `/api/notion-sync/team-b`; `connectors.json` has a `"team-b"` entry.
+**Example (wrong):** Reintroducing a single `NOTION_PAGE_ID`/`GOOGLE_APPS_SCRIPT_URL` env-var fallback "for backwards compatibility" — defeats the entire point of per-connector routing and risks silently syncing the wrong page.
+**Source:** `lib/connectors.ts`, `route.ts` v0.7.0.
+
+---
+
+### [API / External Integrations] — `NOTION_TOKEN` is the one thing that stays a shared env var, not per-connector
+**Rule:** Do not add a per-connector Notion token to `connectors.json`. Every connector uses the same `NOTION_TOKEN` — this was an explicit user decision, not an oversight.
+**Why:** Simplifies the config schema and avoids needing per-connector secret management; revisit only if a future connector genuinely needs to write to a different Notion workspace under a different integration.
+**Example (correct):** `lib/notion.ts` instantiates one `Client` from `process.env.NOTION_TOKEN`, imported by every route that needs it.
+**Example (wrong):** Adding `notionToken` to each `connectors.json` entry "for flexibility" without a concrete need — expands the config surface and secret-handling burden for no current benefit.
+**Source:** User-specified design decision during the multi-connector planning discussion.
+
+---
+
+### [API / External Integrations] — The setup wizard generates a literal function CALL, never dynamic reflection
+**Rule:** `generateNotionGsCode()`'s templated `runPreExportStep()` body is always a plain, literal call to a named function (e.g. `return generateMetricsRemote();`) or a no-op success — never something like `this[functionName]()` resolved at runtime.
+**Why:** Runtime reflection on function names is more fragile across Apps Script's execution model (V8 runtime `this`-binding behavior for top-level function declarations isn't something to rely on) and is harder for a human to read/debug afterward than a plain generated call. Since this code is generated once at setup time, there's no benefit to deferring the name resolution to runtime.
+**Example (correct):** Wizard input "generateMetricsRemote" produces literal generated text `return generateMetricsRemote();`.
+**Example (wrong):** Generating `return this[CONFIG.PRE_EXPORT_FUNCTION_NAME]();` and passing the name as a config constant — adds a runtime failure mode for no benefit.
+**Source:** `lib/generateConnectorFiles.ts`, `route.ts` v0.7.1.
+
+---
+
+### [API / External Integrations] — The wizard NEVER generates page-specific automation logic
+**Rule:** `/setup` only ever generates `Notion.gs` (the generic Web App entry point + Mapping sheet reader) and a literal call to a pre-export function the user names. It must never attempt to generate the actual logic of something like `Data Acquisition.gs`/`portfolio.gs` — those are assumed to already exist, hand-written, specific to that connector's own data source.
+**Why:** This was an explicit scope boundary from the user: page-specific import/analysis logic varies too much per connector to templatize sensibly, and attempting to would turn a focused, reliable code generator into a much riskier one that guesses at business logic.
+**Example (correct):** User types "generateMetricsRemote" as the pre-export function name; the wizard generates a call to it and nothing more.
+**Example (wrong):** The wizard trying to infer what a "pre-export step" should do and writing that logic itself.
+**Source:** Explicit user instruction during the wizard's design discussion.
+
+---
+
+### [Database / ORM Query Patterns] — `list-blocks` must descend into `table` blocks even when Notion doesn't flag them as having children
+**Rule:** `walkBlocks()` in `app/api/setup/list-blocks/route.ts` explicitly checks `block.type === 'table'` (in addition to the general `block.has_children` check) before recursing, and always recurses into tables specifically.
+**Why:** ⚠️ SILENT FAILURE if this check is narrowed to only `has_children` — the entire reason this endpoint exists is to surface `table_row` block IDs, since Notion's own UI won't reliably give you an individual row's link (only the whole table's). Missing this would silently produce a wizard that can list charts but not table rows, defeating half its purpose.
+**Example (correct):** Every `table` block triggers a recursive `blocks.children.list` call to fetch its rows, regardless of the `has_children` flag's exact value.
+**Example (wrong):** Relying solely on `has_children` and assuming it always correctly reflects table rows — even if true today, this is exactly the kind of platform assumption worth pinning down explicitly rather than leaving implicit.
+**Source:** `app/api/setup/list-blocks/route.ts`, v0.7.1.
 
 ---
 

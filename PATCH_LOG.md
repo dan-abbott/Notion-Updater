@@ -4,7 +4,47 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.6.0] — 2026-07-10
+### [0.7.0] — 2026-07-10
+**Type:** Feature
+**Scope:** New: `connectors.json`, `lib/connectors.ts`, `lib/notion.ts`. Moved: `app/api/notion-sync/route.ts` → `app/api/notion-sync/[connectorId]/route.ts`.
+**Summary:** Generalized the middleware from a single hardcoded Notion page + Apps Script pair to supporting many independent connectors, each with its own page and script, addressed by URL. Anticipated to scale to ~30 connectors.
+**Details:**
+- `connectors.json` (repo root): one entry per connector, `{ notionPageId, appsScriptUrl }`. `NOTION_TOKEN` stays a single shared env var — per user decision, it never varies per connector.
+- `lib/connectors.ts`: `getConnectorConfig(connectorId)` looks up an entry, throwing a clear error (listing known connector IDs) if the requested one doesn't exist.
+- `lib/notion.ts`: the shared `Client` instance, extracted so both the sync route and the new setup-wizard routes (see below) use the same one.
+- The sync route is now `app/api/notion-sync/[connectorId]/route.ts` — each connector's Notion button points at its own URL (`/api/notion-sync/<id>`), and the route looks up that connector's page/script pair at request time instead of reading fixed env vars.
+- `NOTION_PAGE_ID` / `GOOGLE_APPS_SCRIPT_URL` env vars are retired — removed from `.env.example`.
+- Renamed `triggerGenerateMetrics()` → `triggerPreExport()` and generalized the Apps Script action from `?action=generateMetrics` to `?action=runPreExport` (see `Notion.gs`'s corresponding generalization, Portfolio Tracker repo v0.5.0) — this terminology was overly specific to the Portfolio Tracker's own pipeline and needed to describe *any* connector's optional pre-export step, not just that one.
+**Breaking:** Yes — every existing connector must get an entry in `connectors.json`, and its Notion button's webhook URL must be updated to include the connector ID. The single-page env-var configuration this replaced no longer works.
+
+---
+
+### [0.7.1] — 2026-07-10
+**Type:** Feature
+**Scope:** New: `app/setup/page.tsx`, `app/api/setup/list-blocks/route.ts`, `app/api/setup/generate/route.ts`, `lib/generateConnectorFiles.ts`, `lib/notionId.ts`.
+**Summary:** Added a setup wizard (`/setup`) that walks through connecting a new Notion page to a new Google Sheet without needing to hand-write `Notion.gs` or hand-assemble the Mapping sheet — addresses the manual-mapping burden flagged as the worst-scaling part of onboarding a new connector (see `ADDING_A_CONNECTOR.md`).
+**Details:**
+- `lib/notionId.ts`: `extractNotionId()` pulls a Notion page/block ID out of either a raw ID or a pasted page URL (with or without a `#block-id` fragment).
+- `app/api/setup/list-blocks/route.ts`: given a page URL/ID, recursively walks the block tree (descending into every `table` block specifically, since `table_row` children are the whole reason this endpoint is more useful than Notion's own "copy link" UI for individual rows) and returns a flat, depth-tagged list of `{ id, type, preview }` for every block. This is the core value of the wizard — Notion's UI won't reliably surface a table row's own block ID, but the API returns it for free.
+- `lib/generateConnectorFiles.ts`: `generateNotionGsCode()` produces the full `Notion.gs` text (mirroring `apps-script/Code.gs` in this repo), templating `runPreExportStep()`'s body with either a literal call to a given function name or a no-op success — deliberately NOT runtime reflection (`this[name]()`), since a plain generated function call is more robust across Apps Script's execution model and easier for a human to read afterward. `generateMappingRows()` produces the Mapping sheet's exact row layout, ready to paste as TSV.
+- `app/api/setup/generate/route.ts`: takes the wizard's collected chart/table-row mappings plus a data source tab name and optional pre-export function name, and returns the generated `Notion.gs` text, Mapping sheet rows, and a plain-language instructions list (including the exact `connectors.json` entry to add, if a connector ID was given).
+- `app/setup/page.tsx`: the wizard UI itself — paste a page, list its blocks, tag image/table_row blocks as chart/table-row mappings inline, fill in connector settings, generate, copy the results. Deliberately plain/functional styling (internal tool, not a customer-facing surface) rather than a full visual-identity pass.
+- **Explicit scope boundary, per user instruction:** the wizard NEVER generates page-specific automation scripts like `Data Acquisition.gs`/`portfolio.gs`. The "pre-export function" field only accepts the *name* of a function assumed to already exist in the target Apps Script project — the wizard generates a call to it, never its logic.
+**Breaking:** No — purely additive; existing connectors are unaffected.
+
+---
+
+
+**Type:** Fix
+**Scope:** `app/api/notion-sync/route.ts`
+**Summary:** Production run returned 0 charts with no visible cause in the Vercel logs. Paired with `Notion.gs` v0.4.1 adding a `warnings` array to the script's response — this update makes `fetchMappedDataFromScript()` log those warnings directly, so a chart-title mismatch or malformed mapping row is visible in the same log stream as everything else, not just in the Apps Script's separate Executions log.
+**Details:**
+- `fetchMappedDataFromScript()` now checks for `data.warnings` and logs each one with a `[NOTION SYNC] ⚠️` prefix, right where the chart/table-row counts are already logged.
+**Breaking:** No.
+
+---
+
+
 **Type:** Refactor
 **Scope:** `app/api/notion-sync/route.ts` (requires paired changes in the Portfolio Tracker Apps Script project — see that repo's PATCH_LOG.md v0.4.0)
 **Summary:** Retired ALL page-text anchor matching for charts and tables (`[Chart] Title`, `[Table] Label`), replacing it with a manually-maintained "Mapping" sheet in Google Sheets that pairs exact Notion block IDs with their data sources. User's motivation: Notion gives very little control over making anchor text small/unobtrusive, and wanted zero visible plumbing on the page.
