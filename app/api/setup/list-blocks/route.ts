@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { notion } from '@/lib/notion';
+import { notion, explainNotionError } from '@/lib/notion';
 import { extractNotionId } from '@/lib/notionId';
 
 export const maxDuration = 60;
@@ -90,7 +90,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ pageId, blocks: rows });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error occurred';
+    const message = explainNotionError(error);
     console.error('[SETUP] list-blocks failed:', error);
     return NextResponse.json({ error: message }, { status: 500 });
   }

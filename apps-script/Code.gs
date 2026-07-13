@@ -68,19 +68,21 @@ function runPreExportStep() {
 
 /**
  * Reads the "Mapping" sheet and resolves it into everything the middleware
- * needs to write directly to Notion. Expected layout:
- *
- *   B1: <name of the sheet charts/cells live on>
+ * needs to write directly to Notion. Each row specifies its OWN sheet tab —
+ * mappings can pull from any number of different tabs in this spreadsheet,
+ * not just one shared tab. Expected layout:
  *
  *   For each row anywhere on the sheet:
  *     - Column A == "Row Block ID" AND column B non-empty
  *         -> a table row mapping. B = the Notion table_row block ID.
- *            Every non-empty cell from column C onward is a source cell
- *            reference (e.g. "C5") on the Data Source Tab, in left-to-right
- *            order — this determines column order in the Notion row.
+ *            C = the sheet tab this row's data comes from.
+ *            Every non-empty cell from column D onward is a source cell
+ *            reference (e.g. "C5") on that tab, in left-to-right order —
+ *            this determines column order in the Notion row.
  *     - Column A == "Block ID" AND column B non-empty
- *         -> a chart mapping. B = the Notion image block ID. C = the
- *            chart's title in Google Sheets.
+ *         -> a chart mapping. B = the Notion image block ID.
+ *            C = the sheet tab this chart lives on.
+ *            D = the chart's title in Google Sheets.
  *     - Anything else (including a label row with an EMPTY column B) is
  *       skipped — this is how a human-readable reference row can coexist
  *       with real mapping rows on the same sheet.
@@ -90,15 +92,6 @@ function readMappingSheet() {
   const mappingSheet = ss.getSheetByName(CONFIG2.MAPPING_SHEET_NAME);
   if (!mappingSheet) {
     throw new Error("Could not find '" + CONFIG2.MAPPING_SHEET_NAME + "' sheet.");
-  }
-
-  const dataSourceTabName = mappingSheet.getRange('B1').getDisplayValue().trim();
-  if (!dataSourceTabName) {
-    throw new Error('Mapping sheet cell B1 ("Data Source Tab") is empty.');
-  }
-  const dataSheet = ss.getSheetByName(dataSourceTabName);
-  if (!dataSheet) {
-    throw new Error("Could not find data source sheet '" + dataSourceTabName + "' referenced in Mapping!B1.");
   }
 
   const mappingValues = mappingSheet.getDataRange().getValues();
@@ -114,72 +107,102 @@ function readMappingSheet() {
     if (!blockId) continue;
 
     if (label === 'Row Block ID') {
+      const tabName = String(row[2]).trim();
       const sourceCellRefs = [];
-      for (let c = 2; c < row.length; c++) {
+      for (let c = 3; c < row.length; c++) {
         const cellRef = String(row[c]).trim();
         if (cellRef) sourceCellRefs.push(cellRef);
       }
-      if (sourceCellRefs.length === 0) {
-        const warning = 'Row Block ID "' + blockId + '" (Mapping row ' + (i + 1) + ') has no source cell references — skipped.';
+      if (!tabName || sourceCellRefs.length === 0) {
+        const warning = 'Row Block ID "' + blockId + '" (Mapping row ' + (i + 1) + ') is missing a sheet tab or source cells — skipped.';
         Logger.log('⚠️ ' + warning);
         warnings.push(warning);
         continue;
       }
-      tableRowMappings.push({ blockId: blockId, sourceCellRefs: sourceCellRefs });
+      tableRowMappings.push({ blockId: blockId, tabName: tabName, sourceCellRefs: sourceCellRefs });
     } else if (label === 'Block ID') {
-      const chartTitle = String(row[2]).trim();
-      if (!chartTitle) {
-        const warning = 'Block ID "' + blockId + '" (Mapping row ' + (i + 1) + ') has no chart title in column C — skipped.';
+      const tabName = String(row[2]).trim();
+      const chartTitle = String(row[3]).trim();
+      if (!tabName || !chartTitle) {
+        const warning = 'Block ID "' + blockId + '" (Mapping row ' + (i + 1) + ') is missing a sheet tab or chart title — skipped.';
         Logger.log('⚠️ ' + warning);
         warnings.push(warning);
         continue;
       }
-      chartMappings.push({ blockId: blockId, chartTitle: chartTitle });
+      chartMappings.push({ blockId: blockId, tabName: tabName, chartTitle: chartTitle });
     }
   }
 
   console.log(
     'Mapping sheet parsed: ' + tableRowMappings.length + ' table row mapping(s), ' +
-    chartMappings.length + ' chart mapping(s). Data source tab: "' + dataSourceTabName + '".'
+    chartMappings.length + ' chart mapping(s), across ' +
+    new Set(tableRowMappings.map(function (m) { return m.tabName; }).concat(chartMappings.map(function (m) { return m.tabName; }))).size +
+    ' tab(s).'
   );
 
-  return { dataSheet: dataSheet, tableRowMappings: tableRowMappings, chartMappings: chartMappings, warnings: warnings };
+  return { tableRowMappings: tableRowMappings, chartMappings: chartMappings, warnings: warnings };
 }
 
 function exportMappedDataAsJson() {
   const tStart = Date.now();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const parsed = readMappingSheet();
+  const warnings = parsed.warnings.slice();
 
-  const tableRows = parsed.tableRowMappings.map(function (mapping) {
-    const values = mapping.sourceCellRefs.map(function (ref) {
-      return parsed.dataSheet.getRange(ref).getDisplayValue();
-    });
-    return { blockId: mapping.blockId, values: values };
-  });
+  // Sheet lookups are cached since the same tab is often referenced by
+  // several mapping rows.
+  const sheetCache = {};
+  function getSheet(tabName) {
+    if (!sheetCache[tabName]) {
+      const sheet = ss.getSheetByName(tabName);
+      if (!sheet) throw new Error('Could not find sheet tab "' + tabName + '".');
+      sheetCache[tabName] = sheet;
+    }
+    return sheetCache[tabName];
+  }
 
-  const chartResult = exportMappedCharts(parsed.dataSheet, parsed.chartMappings);
-  const warnings = parsed.warnings.concat(chartResult.warnings);
+  const tableRows = [];
+  for (let i = 0; i < parsed.tableRowMappings.length; i++) {
+    const mapping = parsed.tableRowMappings[i];
+    try {
+      const sheet = getSheet(mapping.tabName);
+      const values = mapping.sourceCellRefs.map(function (ref) {
+        return sheet.getRange(ref).getDisplayValue();
+      });
+      tableRows.push({ blockId: mapping.blockId, values: values });
+    } catch (err) {
+      const warning = 'Row Block ID "' + mapping.blockId + '" (tab "' + mapping.tabName + '"): ' + err;
+      Logger.log('⚠️ ' + warning);
+      warnings.push(warning);
+    }
+  }
+
+  const chartResult = exportMappedCharts(getSheet, parsed.chartMappings);
+  warnings.push.apply(warnings, chartResult.warnings);
 
   console.log('[TIMING] exportMappedDataAsJson total: ' + (Date.now() - tStart) + 'ms');
   return { tableRows: tableRows, charts: chartResult.charts, warnings: warnings };
 }
 
 /**
- * Resolves each chart mapping's title to an actual chart object on the data
- * source sheet, then exports it as base64 PNG via a temporary Slides
- * presentation (chart.getAs('image/png') directly is a documented Apps
- * Script rendering quirk that doesn't always reproduce the chart's actual
- * on-screen appearance in Sheets — e.g. gridlines can render incorrectly).
+ * Resolves each chart mapping's title to an actual chart object on ITS OWN
+ * sheet tab (charts can live on different tabs), then exports it as base64
+ * PNG via a temporary Slides presentation (chart.getAs('image/png')
+ * directly is a documented Apps Script rendering quirk that doesn't always
+ * reproduce the chart's actual on-screen appearance in Sheets — e.g.
+ * gridlines can render incorrectly).
  */
-function exportMappedCharts(dataSheet, chartMappings) {
+function exportMappedCharts(getSheet, chartMappings) {
   const warnings = [];
   if (chartMappings.length === 0) return { charts: [], warnings: warnings };
 
-  const allCharts = dataSheet.getCharts();
-  const chartsByTitle = {};
-  for (let i = 0; i < allCharts.length; i++) {
-    const title = allCharts[i].getOptions().get('title');
-    if (title) chartsByTitle[title] = allCharts[i];
+  // Group by tab so each tab's charts-by-title lookup only happens once,
+  // regardless of how many chart mappings reference that tab.
+  const mappingsByTab = {};
+  for (let i = 0; i < chartMappings.length; i++) {
+    const m = chartMappings[i];
+    if (!mappingsByTab[m.tabName]) mappingsByTab[m.tabName] = [];
+    mappingsByTab[m.tabName].push(m);
   }
 
   const result = [];
@@ -188,24 +211,44 @@ function exportMappedCharts(dataSheet, chartMappings) {
   try {
     const slide = tempPresentation.getSlides()[0];
 
-    for (let i = 0; i < chartMappings.length; i++) {
-      const mapping = chartMappings[i];
-      const chart = chartsByTitle[mapping.chartTitle];
-      if (!chart) {
-        const warning =
-          'No chart titled "' + mapping.chartTitle + '" found on sheet "' + dataSheet.getName() +
-          '" (available: ' + Object.keys(chartsByTitle).join(', ') + ') — skipped block ' + mapping.blockId + '.';
-        Logger.log('⚠️ ' + warning);
-        warnings.push(warning);
+    for (const tabName in mappingsByTab) {
+      let sheet;
+      try {
+        sheet = getSheet(tabName);
+      } catch (err) {
+        mappingsByTab[tabName].forEach(function (m) {
+          const warning = 'Block ID "' + m.blockId + '" (tab "' + tabName + '"): ' + err;
+          Logger.log('⚠️ ' + warning);
+          warnings.push(warning);
+        });
         continue;
       }
 
-      const insertedChart = slide.insertSheetsChartAsImage(chart);
-      const imageBlob = insertedChart.getAs('image/png');
-      const base64Data = Utilities.base64Encode(imageBlob.getBytes());
-      insertedChart.remove();
+      const allCharts = sheet.getCharts();
+      const chartsByTitle = {};
+      for (let i = 0; i < allCharts.length; i++) {
+        const title = allCharts[i].getOptions().get('title');
+        if (title) chartsByTitle[title] = allCharts[i];
+      }
 
-      result.push({ blockId: mapping.blockId, imageBase64: base64Data });
+      mappingsByTab[tabName].forEach(function (mapping) {
+        const chart = chartsByTitle[mapping.chartTitle];
+        if (!chart) {
+          const warning =
+            'No chart titled "' + mapping.chartTitle + '" found on tab "' + tabName +
+            '" (available: ' + Object.keys(chartsByTitle).join(', ') + ') — skipped block ' + mapping.blockId + '.';
+          Logger.log('⚠️ ' + warning);
+          warnings.push(warning);
+          return;
+        }
+
+        const insertedChart = slide.insertSheetsChartAsImage(chart);
+        const imageBlob = insertedChart.getAs('image/png');
+        const base64Data = Utilities.base64Encode(imageBlob.getBytes());
+        insertedChart.remove();
+
+        result.push({ blockId: mapping.blockId, imageBase64: base64Data });
+      });
     }
   } finally {
     DriveApp.getFileById(tempPresentation.getId()).setTrashed(true);
@@ -213,3 +256,4 @@ function exportMappedCharts(dataSheet, chartMappings) {
 
   return { charts: result, warnings: warnings };
 }
+

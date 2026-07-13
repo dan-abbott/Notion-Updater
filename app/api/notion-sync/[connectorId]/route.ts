@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { put } from '@vercel/blob';
 import { waitUntil } from '@vercel/functions';
-import { notion } from '@/lib/notion';
+import { notion, explainNotionError } from '@/lib/notion';
 import { getConnectorConfig } from '@/lib/connectors';
 
 // Hobby plan's configurable ceiling. The full pipeline (trigger the Apps
@@ -270,7 +270,7 @@ async function runSyncPipeline(pageId: string, appsScriptUrl: string): Promise<v
     }
   } catch (error) {
     console.error(`[NOTION SYNC] ❌ Sync failed! Reason:`, error);
-    const message = error instanceof Error ? error.message : 'Unknown error occurred';
+    const message = explainNotionError(error);
     // Best-effort — updateStatus() never throws, so this is safe even if
     // the failure happened before any prior status update succeeded.
     await updateStatus(pageId, `Sync failed: ${message}`);

@@ -78,7 +78,30 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
-### [API / External Integrations] — Connectors are registered in `connectors.json`, looked up per-request by URL segment
+### [API / External Integrations] — Every Notion page must be explicitly shared with the integration; this fails silently and generically otherwise
+**Rule:** A page ID being correct is not sufficient for any Notion API call against it to succeed — the page must also have been shared with the integration in Notion's own UI (page → ••• → Connections). `explainNotionError()` (`lib/notion.ts`) detects this specific failure (`APIErrorCode.ObjectNotFound`) and returns a message naming the fix; it's used everywhere Notion API errors reach a person (the setup wizard's `list-blocks`, and the sync route's outer catch).
+**Why:** ⚠️ SILENT FAILURE if this detection is removed or bypassed — Notion returns the exact same generic "object not found" error for a genuinely wrong page ID and for a correct-but-unshared page, so without this specific check, someone would have no way to tell which problem they actually have from the error message alone.
+**Example (correct):** Any new code path that surfaces a Notion API error to a person routes it through `explainNotionError()` first.
+**Example (wrong):** A new error-handling path that does `error instanceof Error ? error.message : String(error)` directly — loses this specific, actionable detection.
+**Source:** User-flagged gap ("don't we need to link the connector to the Notion page?"); implemented in `route.ts`/`lib/notion.ts` v0.8.1.
+
+---
+**Rule:** As of v0.8.0, both `Row Block ID` and `Block ID` mapping rows carry their own tab name (column C). There is no more global "Data Source Tab" cell — a spreadsheet with multiple tabs of data can mix mappings from any of them in the same Mapping sheet.
+**Why:** ⚠️ SILENT FAILURE risk if a mapping row's tab name is left blank or misspelled — `readMappingSheet()` treats a missing tab name the same as a missing source cell/chart title: the row is skipped with a warning, not a hard failure, so it's easy to miss unless the warnings array is actually checked.
+**Example (correct):** Two mapping rows can reference `Testing` and `Studio Summary` tabs in the same Mapping sheet without conflict.
+**Example (wrong):** Reintroducing a shared default tab "to simplify the common case" — reopens the exact limitation this was built to remove, and creates two different code paths (per-row tab vs. shared tab) to maintain.
+**Source:** User-requested change; implemented in `lib/generateConnectorFiles.ts` v0.8.0, mirrored in `Notion.gs` v0.6.0 (Portfolio Tracker repo).
+
+---
+
+### [Database / ORM Query Patterns] — Existing Mapping sheets need manual migration to the per-row-tab layout
+**Rule:** Any Mapping sheet built before v0.8.0 uses the old single-`B1`-tab layout and will not work with the regenerated `Notion.gs` until migrated: add a tab-name column (C) to every mapping row, shifting table rows' source cells one column right.
+**Why:** This is a data-layout change, not a backward-compatible extension — `readMappingSheet()` no longer reads `B1` at all, so an unmigrated sheet's mappings will simply have blank tab names and get silently skipped (as warnings, not errors) rather than falling back to any old shared-tab behavior.
+**Example (correct):** Before syncing with the new script, manually insert the tab name into column C of every existing mapping row.
+**Example (wrong):** Deploying the new `Notion.gs` against an unmigrated Mapping sheet and assuming it still works — every row will report "missing a sheet tab" in the warnings array and sync nothing.
+**Source:** Observed necessity during the v0.8.0 migration; the Portfolio Tracker's own live Mapping sheet required exactly this.
+
+---
 **Rule:** `getConnectorConfig(connectorId)` (`lib/connectors.ts`) is the only source of truth for which Notion page and Apps Script URL a given sync request targets. The `connectorId` comes from the dynamic route segment (`/api/notion-sync/[connectorId]`), never from a request body or a single global env var.
 **Why:** ⚠️ SILENT FAILURE if a new connector's button is pointed at a URL with a typo'd or missing connector ID — `getConnectorConfig()` throws with a list of known connector IDs specifically so this fails loud and specific rather than silently reusing another connector's config or a stale env var.
 **Example (correct):** Team B's Notion button posts to `/api/notion-sync/team-b`; `connectors.json` has a `"team-b"` entry.

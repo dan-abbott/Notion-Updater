@@ -4,7 +4,34 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.7.0] — 2026-07-10
+### [0.8.1] — 2026-07-10
+**Type:** Feature
+**Scope:** `lib/notion.ts`, `app/api/setup/list-blocks/route.ts`, `app/api/notion-sync/[connectorId]/route.ts`, `app/setup/page.tsx`
+**Summary:** Notion's API returns the same generic "object not found" error whether a page genuinely doesn't exist or it exists but was never shared with the integration — the latter being, by far, the most common cause when someone's just set up a new connector. Added specific detection for this, plus an explicit reminder in the wizard, so this doesn't cost anyone debugging time.
+**Details:**
+- `lib/notion.ts`: added `explainNotionError(error)`, using `@notionhq/client`'s `isNotionClientError`/`APIErrorCode.ObjectNotFound` to detect this specific case and return a message naming the actual fix (Notion page → ••• menu → Connections → add the integration) rather than a bare 404.
+- Used in `list-blocks`'s catch block (where this is most likely to be hit for the first time, during initial setup) and in the sync route's outer catch (which wraps every Notion API call in `runSyncPipeline()`, so any connector — wizard-built or not — gets the same clear message if its page ever loses its integration connection).
+- Added an explicit reminder in the wizard's Step 2, right above the page-paste input, telling people to share the page with the integration before listing blocks.
+**Breaking:** No — purely additive error-message clarity; behavior is otherwise unchanged.
+
+---
+
+
+**Type:** Feature / Breaking
+**Scope:** `lib/generateConnectorFiles.ts`, `apps-script/Code.gs`, `app/setup/page.tsx`, new `app/api/setup/generate-script`, new `app/api/setup/generate-mapping`, removed `app/api/setup/generate`. Paired change: `Notion.gs` v0.6.0 in the Portfolio Tracker repo.
+**Summary:** Two user-requested changes: (1) Mapping sheet mappings can now each pull from a different sheet tab, instead of every connector being limited to one shared "Data Source Tab"; (2) the setup wizard restructured into an explicit 5-step progression, with chart/table-row details filled in inline right where each block is selected, instead of a separate step below.
+**Details:**
+- **Multi-sheet mappings:** every row in the Mapping sheet now names its own tab (`Row Block ID` mappings: column C = tab, D+ = source cells; `Block ID` chart mappings: column C = tab, D = chart title). The old single `B1` "Data Source Tab" cell is gone entirely. `exportMappedDataAsJson()`/`exportMappedCharts()` (both regenerated via `lib/generateConnectorFiles.ts`) now resolve each mapping's sheet by name per-row (cached, so repeated references to the same tab don't re-look-it-up), and group chart mappings by tab so each tab's chart-title lookup only happens once regardless of how many chart mappings reference it.
+- **⚠️ Breaking for existing connectors:** any live Mapping sheet still using the old `B1`-only layout must be migrated — add a "Sheet tab" column (C) to every existing `Row Block ID`/`Block ID` row, shifting table rows' source cells one column right (now starting at D instead of C). The Portfolio Tracker's own Mapping sheet needs this migration done by hand before its next sync.
+- **Wizard restructure:** `/setup` is now an explicit 5-step flow — (1) generate `Notion.gs` + deploy + capture the Web App URL, (2) list Notion blocks, tag charts/table rows inline (each block's "Add as..." button expands its own inline tab-name/title or tab-name/cells inputs directly under that block, rather than a separate list further down the page), and generate Mapping rows, (3) the `connectors.json` entry to add (with a direct link to the file in GitHub), (4) the Notion button's webhook URL, (5) a test checklist.
+- Split the old single `/api/setup/generate` route into `/api/setup/generate-script` (step 1, depends only on the optional pre-export function name) and `/api/setup/generate-mapping` (step 2, depends only on the collected chart/table-row mappings) — matches the wizard no longer needing both pieces of information at the same time.
+- Added `lib/randomConnectorId.ts`: auto-fills Step 1's connector ID with a random adjective-noun pair (e.g. `amber-otter`), freely editable — removes the "name it right now or leave it blank" friction point without making the ID meaningful.
+- Step 3 and 4 now generate real, copy-ready output instead of placeholders: the `connectors.json` snippet uses the actual page ID/script URL/connector ID collected in earlier steps, links directly to `https://github.com/dan-abbott/Notion-Updater/blob/main/connectors.json`, and the button URL uses the actual deployed base (`notion-updater-pi.vercel.app`).
+**Breaking:** Yes — see the Mapping sheet migration note above. This is a data-layout change to every existing connector's Mapping sheet, not just new ones.
+
+---
+
+
 **Type:** Feature
 **Scope:** New: `connectors.json`, `lib/connectors.ts`, `lib/notion.ts`. Moved: `app/api/notion-sync/route.ts` → `app/api/notion-sync/[connectorId]/route.ts`.
 **Summary:** Generalized the middleware from a single hardcoded Notion page + Apps Script pair to supporting many independent connectors, each with its own page and script, addressed by URL. Anticipated to scale to ~30 connectors.
