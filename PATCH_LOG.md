@@ -4,7 +4,31 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.8.2] — 2026-07-10
+### [0.9.0] — 2026-07-10
+**Type:** Feature
+**Scope:** `app/api/setup/list-blocks/route.ts`, `app/setup/page.tsx`
+**Summary:** Replaced the flat, block-ID-labeled list in Step 2 with a layout that mirrors the actual Notion page — real HTML tables with inputs aligned directly under each column, headings/paragraphs as read-only context, images as inline chart-input boxes. Block IDs are no longer shown anywhere in the UI (still used internally, just not displayed).
+**Details:**
+- `list-blocks` no longer flattens tables into individual `table_row` entries. It now returns a discriminated union: `{ kind: 'simple', id, type, depth, preview }` for headings/paragraphs/images/etc., and `{ kind: 'table', id, depth, columns, hasRealHeader, rows: [{ id, cells }] }` for tables — one structured item per table, with real header labels (from the table's actual header row, or generic "Column N" labels if it has none) and every data row's current cell text included for context.
+- The wizard renders this directly as a page: headings/paragraphs as plain read-only text (empty paragraphs skipped as pure visual noise), images as a bordered box with inline "Sheet tab" / "Chart title" inputs, and tables as real `<table>` elements — a header row showing the actual Notion column labels, plus one small "Tab" input column and one input per real column, all rendered directly under their matching header.
+- Each table cell's input placeholder shows the CURRENT Notion value (e.g. `now: 21/88%`) rather than a generic example — this replaces needing a block ID to identify which row is which; the current content itself is the identifier.
+- Removed the explicit "Add as chart"/"Add as table row" toggle buttons entirely — every image and table row is always directly editable. An entry only counts toward the generated mapping if its fields are actually filled in (unchanged from the existing filter logic), so leaving something blank has always been equivalent to "not selected."
+- Table row state changed from a single free-text comma-separated string to a structured per-column array (`cellRefs: string[]`, one slot per real column) — since the grid is now rendered with one input per actual column, there's no more comma-parsing or trailing-blank-trimming needed on the client; the array is already exactly the right width by construction. (The Apps Script/backend side still needs to support arbitrary hand-edited Mapping sheets independent of the wizard, so its blank-handling logic there is unchanged.)
+**Breaking:** No — the Mapping sheet output format and backend behavior are unchanged; this is purely a `/setup` UI/UX change.
+
+---
+
+
+**Type:** Fix
+**Scope:** `app/setup/page.tsx`
+**Summary:** User reported `Notion.gs` including a call to `generateMetricsRemote()` even with the pre-export function field left empty. The underlying generator (`generateNotionGsCode()`) was verified correct for `undefined`/`''`/whitespace-only input — the actual bug was stale UI state: editing the pre-export field after already clicking "Generate Notion.gs" once left the previously generated code on screen, unchanged, so anyone who edited the field without clicking Generate again would keep looking at (and could copy/deploy) output that didn't reflect the field's current value.
+**Details:**
+- The pre-export function name input's `onChange` now clears both `notionGsCode` and `appsScriptUrl` immediately. This forces an explicit re-generation before the "Next" button re-enables (it's gated on `appsScriptUrl` being non-empty), rather than letting stale output linger silently.
+**Breaking:** No — purely a UI correctness fix.
+
+---
+
+
 **Type:** Fix
 **Scope:** `lib/generateConnectorFiles.ts`, `apps-script/Code.gs`, `app/api/notion-sync/[connectorId]/route.ts`, `app/setup/page.tsx`
 **Summary:** User reported `"Number of cells in table row must match the table width of the parent table"` from Notion's API. Root cause: leaving a Mapping sheet cell blank to "skip" a column made `readMappingSheet()` omit it from the list entirely, shifting every later column left and producing too few values for the row's actual width. Fixed by treating a blank as "leave this column's current value unchanged" instead of "remove it from the list."

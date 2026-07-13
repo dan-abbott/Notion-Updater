@@ -137,16 +137,41 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
-### [Database / ORM Query Patterns] — `list-blocks` must descend into `table` blocks even when Notion doesn't flag them as having children
-**Rule:** `walkBlocks()` in `app/api/setup/list-blocks/route.ts` explicitly checks `block.type === 'table'` (in addition to the general `block.has_children` check) before recursing, and always recurses into tables specifically.
-**Why:** ⚠️ SILENT FAILURE if this check is narrowed to only `has_children` — the entire reason this endpoint exists is to surface `table_row` block IDs, since Notion's own UI won't reliably give you an individual row's link (only the whole table's). Missing this would silently produce a wizard that can list charts but not table rows, defeating half its purpose.
-**Example (correct):** Every `table` block triggers a recursive `blocks.children.list` call to fetch its rows, regardless of the `has_children` flag's exact value.
-**Example (wrong):** Relying solely on `has_children` and assuming it always correctly reflects table rows — even if true today, this is exactly the kind of platform assumption worth pinning down explicitly rather than leaving implicit.
-**Source:** `app/api/setup/list-blocks/route.ts`, v0.7.1.
+### [Database / ORM Query Patterns] — Every `table` block always gets its rows fetched explicitly, regardless of `has_children`
+**Rule:** `walkBlocks()` in `app/api/setup/list-blocks/route.ts` special-cases `block.type === 'table'`, always calling `describeTable()` (which unconditionally fetches its rows) rather than relying on the generic `has_children` recursion check used for everything else.
+**Why:** ⚠️ SILENT FAILURE if this is narrowed to only the generic `has_children` path — the entire reason this endpoint fetches table rows explicitly is that Notion's own UI won't reliably give you an individual row's link (only the whole table's), and the wizard's page-mirroring layout (v0.9.0) requires every row's real cell content and block ID to render the grid at all.
+**Example (correct):** Every `table` block triggers `describeTable()`, which always fetches its `table_row` children via `fetchAllChildren()`.
+**Example (wrong):** Relying solely on `has_children` and assuming it always correctly reflects whether a table has rows worth fetching — even if true today, this is exactly the kind of platform assumption worth pinning down explicitly rather than leaving implicit.
+**Source:** `app/api/setup/list-blocks/route.ts`, originally v0.7.1, restructured into `describeTable()` in v0.9.0.
 
 ---
 
-### [Deployment] — Next.js version is pinned to a patched release
+### [Database / ORM Query Patterns] — `list-blocks` returns tables as ONE structured unit, never flattened into individual rows
+**Rule:** `walkBlocks()` must never push a table's `table_row` children as separate flat items in the returned list. Every table becomes exactly one `{ kind: 'table', columns, rows }` entry, with its data rows nested inside.
+**Why:** ⚠️ SILENT FAILURE risk if this reverts to flattening — the whole point of the v0.9.0 UI redesign is rendering an actual grid that mirrors the Notion table, with inputs aligned under real column headers. A flattened list can't be rendered that way; reverting the API shape would silently break the wizard's layout without necessarily causing an error (React would just render something structurally wrong, not throw).
+**Example (correct):** One table with 3 data rows produces exactly one item in the response, with `rows: [...]` containing all 3.
+**Example (wrong):** Pushing the table block itself AND its `table_row` children as separate flat list entries (the pre-v0.9.0 behavior) — works for a "list of blocks with IDs" UI, but is the wrong shape for a page-mirroring grid.
+**Source:** User-requested redesign; implemented in `list-blocks`/`app/setup/page.tsx` v0.9.0.
+
+---
+
+### [UI / Component Constraints] — Block IDs are never displayed in the wizard UI, only carried internally in state
+**Rule:** No component in `app/setup/page.tsx` renders a raw Notion block ID as visible text. Every block/row/image still has its ID available (as object keys in `chartDetails`/`tableRowDetails`, or embedded in the `items`/`rows` API response) — it's just not shown.
+**Why:** User-requested simplification: block IDs are implementation detail, not something a person configuring a connector needs to see or think about. The current Notion value of a cell (shown as the input's placeholder) does the job block IDs used to do — identifying which row is which — without the visual clutter.
+**Example (correct):** A table row's current Notion cell content (`row.cells[i]`) is shown as the placeholder text for that column's input.
+**Example (wrong):** Re-adding a `<code>{block.id}</code>` anywhere in the rendered layout "just in case it's useful" — reopens the clutter this redesign was meant to remove.
+**Source:** User-requested design change; implemented in `app/setup/page.tsx` v0.9.0.
+
+---
+
+### [UI / Component Constraints] — Editing a Step 1 input must immediately invalidate its previously generated output
+**Rule:** Changing `preExportFunctionName` clears both `notionGsCode` and `appsScriptUrl` right away, rather than leaving the last-generated result on screen until someone explicitly clicks "Generate Notion.gs" again.
+**Why:** ⚠️ SILENT FAILURE if this invalidation is skipped — a person could edit the field, not notice the displayed code/URL are unchanged, and copy/deploy output that silently doesn't match what they think they configured. This was reported in production as "Notion.gs includes a pre-export call even with the field empty," when the actual bug was stale output, not incorrect generation.
+**Example (correct):** Typing in the pre-export field immediately blanks the code block and URL input, visibly signaling "not generated yet."
+**Example (wrong):** Letting the old generated code remain visible/copyable after the input it depended on has changed.
+**Source:** User-reported confusion; fixed in `app/setup/page.tsx` v0.8.3. (The generator itself, `generateNotionGsCode()`, was verified correct for empty/undefined/whitespace input before concluding this was a UI-state bug, not a codegen bug.)
+
+---
 **Rule:** Do not downgrade `next` below `14.2.35` on the 14.x line (or the equivalent patched minimum on any 15.x/16.x line, if upgraded later).
 **Why:** Versions prior to 14.2.35 are affected by CVE-2025-55183, CVE-2025-55184, and CVE-2025-67779 (React Server Components DoS / source-code exposure). Vercel blocks deployment of known-vulnerable versions, so an accidental downgrade will surface as a deploy failure — not silent, but worth knowing why.
 **Example (correct):** `"next": "14.2.35"` or later in `package.json`.

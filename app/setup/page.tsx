@@ -6,15 +6,27 @@ import { generateRandomConnectorId } from '@/lib/randomConnectorId';
 const BASE_URL = 'notion-updater-pi.vercel.app';
 const CONNECTORS_JSON_URL = 'https://github.com/dan-abbott/Notion-Updater/blob/main/connectors.json';
 
-type BlockRow = {
+type SimpleBlockItem = {
+  kind: 'simple';
   id: string;
   type: string;
   depth: number;
   preview: string;
 };
 
+type TableBlockItem = {
+  kind: 'table';
+  id: string;
+  depth: number;
+  columns: string[];
+  hasRealHeader: boolean;
+  rows: { id: string; cells: string[] }[];
+};
+
+type PageBlockItem = SimpleBlockItem | TableBlockItem;
+
 type ChartDetails = { tabName: string; chartTitle: string };
-type TableRowDetails = { tabName: string; sourceCells: string };
+type TableRowDetails = { tabName: string; cellRefs: string[] };
 
 // Minimal client-side mirror of lib/notionId.ts's extraction logic — just
 // string parsing, safe to duplicate rather than round-trip to the server
@@ -39,18 +51,6 @@ function extractNotionIdClient(input: string): string | null {
   return null;
 }
 
-// Splits a comma-separated cell list, preserving blank entries as null
-// ("leave this column unchanged") while trimming only trailing blanks —
-// mirrors the Apps Script side's readMappingSheet() exactly.
-function parseSourceCells(input: string): (string | null)[] {
-  const parts = input.split(',').map(s => s.trim());
-  let lastNonEmpty = -1;
-  parts.forEach((p, i) => {
-    if (p) lastNonEmpty = i;
-  });
-  return parts.slice(0, lastNonEmpty + 1).map(p => (p ? p : null));
-}
-
 export default function SetupPage() {
   const [step, setStep] = useState(1);
 
@@ -64,7 +64,7 @@ export default function SetupPage() {
 
   // Step 2 — Notion page + block selection
   const [pageInput, setPageInput] = useState('');
-  const [blocks, setBlocks] = useState<BlockRow[] | null>(null);
+  const [blocks, setBlocks] = useState<PageBlockItem[] | null>(null);
   const [loadingBlocks, setLoadingBlocks] = useState(false);
   const [blocksError, setBlocksError] = useState<string | null>(null);
   const [chartDetails, setChartDetails] = useState<Record<string, ChartDetails>>({});
@@ -113,6 +113,9 @@ export default function SetupPage() {
     setLoadingBlocks(true);
     setBlocksError(null);
     setBlocks(null);
+    setChartDetails({});
+    setTableRowDetails({});
+    setMappingRows(null);
     try {
       const res = await fetch('/api/setup/list-blocks', {
         method: 'POST',
@@ -121,7 +124,7 @@ export default function SetupPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not list blocks for that page.');
-      setBlocks(data.blocks);
+      setBlocks(data.items);
     } catch (err) {
       setBlocksError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -129,27 +132,26 @@ export default function SetupPage() {
     }
   }
 
-  function toggleChart(blockId: string) {
-    setChartDetails(prev => {
-      const next = { ...prev };
-      if (next[blockId]) {
-        delete next[blockId];
-      } else {
-        next[blockId] = { tabName: '', chartTitle: '' };
-      }
-      return next;
-    });
+  function updateChart(blockId: string, patch: Partial<ChartDetails>) {
+    setChartDetails(prev => ({
+      ...prev,
+      [blockId]: { tabName: prev[blockId]?.tabName ?? '', chartTitle: prev[blockId]?.chartTitle ?? '', ...patch },
+    }));
   }
 
-  function toggleTableRow(blockId: string) {
+  function updateTableRowTab(rowId: string, numCols: number, tabName: string) {
+    setTableRowDetails(prev => ({
+      ...prev,
+      [rowId]: { tabName, cellRefs: prev[rowId]?.cellRefs ?? Array(numCols).fill('') },
+    }));
+  }
+
+  function updateTableRowCell(rowId: string, numCols: number, colIndex: number, value: string) {
     setTableRowDetails(prev => {
-      const next = { ...prev };
-      if (next[blockId]) {
-        delete next[blockId];
-      } else {
-        next[blockId] = { tabName: '', sourceCells: '' };
-      }
-      return next;
+      const existing = prev[rowId] ?? { tabName: '', cellRefs: Array(numCols).fill('') };
+      const cellRefs = [...existing.cellRefs];
+      cellRefs[colIndex] = value;
+      return { ...prev, [rowId]: { ...existing, cellRefs } };
     });
   }
 
@@ -161,16 +163,14 @@ export default function SetupPage() {
         .filter(([, d]) => d.tabName.trim() && d.chartTitle.trim())
         .map(([blockId, d]) => ({ blockId, tabName: d.tabName.trim(), chartTitle: d.chartTitle.trim() }));
       const tableRows = Object.entries(tableRowDetails)
-        .filter(([, d]) => d.tabName.trim() && d.sourceCells.trim())
+        .filter(([, d]) => d.tabName.trim() && d.cellRefs.some(c => c.trim()))
         .map(([blockId, d]) => ({
           blockId,
           tabName: d.tabName.trim(),
-          // A blank between commas (e.g. "C5, , E5") means "leave that
-          // column unchanged" — preserve its position as null rather than
-          // filtering it out, which would shift later columns left.
-          // Trailing blanks (nothing after them) are trimmed, so you don't
-          // need filler commas past the last column you care about.
-          sourceCells: parseSourceCells(d.sourceCells),
+          // Each entry lines up with a real column position (built directly
+          // from the rendered grid, one input per column) — a blank input
+          // means "leave that column unchanged" in Notion, sent as null.
+          sourceCells: d.cellRefs.map(c => (c.trim() ? c.trim() : null)),
         }));
 
       const res = await fetch('/api/setup/generate-mapping', {
@@ -226,7 +226,15 @@ export default function SetupPage() {
               type="text"
               placeholder="e.g. generateMetricsRemote — leave blank if none"
               value={preExportFunctionName}
-              onChange={e => setPreExportFunctionName(e.target.value)}
+              onChange={e => {
+                setPreExportFunctionName(e.target.value);
+                // Clear any previously generated code AND the pasted Web App
+                // URL — both are now stale: the code no longer matches what
+                // was last deployed, and the URL corresponds to that old
+                // deployment until it's redeployed and re-pasted.
+                setNotionGsCode(null);
+                setAppsScriptUrl('');
+              }}
             />
             <span className="hint">Must already exist in this Sheet's Apps Script project — this only generates the call to it.</span>
           </label>
@@ -297,73 +305,98 @@ export default function SetupPage() {
           {blocks && (
             <>
               <p className="hint">
-                For image blocks, click <strong>Add as chart</strong> and fill in the sheet tab and exact chart
-                title. For table row blocks, click <strong>Add as table row</strong> and fill in the sheet tab
-                and source cells (e.g. <code>C5, D5, E5, F5</code>). Leave a slot blank between commas
-                (e.g. <code>C5, , E5</code>) to leave that column's current value in Notion untouched.
+                This mirrors your Notion page. Fill in a <strong>sheet tab</strong> and <strong>chart title</strong> under any
+                image to sync a chart into it. For tables, fill in a <strong>sheet cell</strong> under each column you want
+                synced — leave a cell blank to leave that column unchanged. Nothing you leave blank gets included.
               </p>
-              <div className="blockList">
-                {blocks.map(block => (
-                  <div key={block.id} className="blockGroup" style={{ paddingLeft: `${block.depth * 20}px` }}>
-                    <div className="blockRow">
-                      <span className="blockType">{block.type}</span>
-                      <span className="blockPreview">{block.preview}</span>
-                      <code className="blockId">{block.id}</code>
-                      {block.type === 'image' && (
-                        <button className={`small ${chartDetails[block.id] ? 'ghost' : ''}`} onClick={() => toggleChart(block.id)}>
-                          {chartDetails[block.id] ? 'Remove' : 'Add as chart'}
-                        </button>
-                      )}
-                      {block.type === 'table_row' && (
-                        <button className={`small ${tableRowDetails[block.id] ? 'ghost' : ''}`} onClick={() => toggleTableRow(block.id)}>
-                          {tableRowDetails[block.id] ? 'Remove' : 'Add as table row'}
-                        </button>
-                      )}
-                    </div>
+              <div className="pageLayout">
+                {blocks.map(item => {
+                  if (item.kind === 'table') {
+                    return (
+                      <table key={item.id} className="pageTable" style={{ marginLeft: `${item.depth * 20}px` }}>
+                        <thead>
+                          <tr>
+                            <th className="tabHeader">Tab</th>
+                            {item.columns.map((col, i) => (
+                              <th key={i}>{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {item.rows.map(row => {
+                            const numCols = item.columns.length;
+                            const details = tableRowDetails[row.id];
+                            return (
+                              <tr key={row.id}>
+                                <td className="tabCell">
+                                  <input
+                                    type="text"
+                                    placeholder="Tab"
+                                    value={details?.tabName ?? ''}
+                                    onChange={e => updateTableRowTab(row.id, numCols, e.target.value)}
+                                  />
+                                </td>
+                                {row.cells.map((currentValue, colIndex) => (
+                                  <td key={colIndex}>
+                                    <input
+                                      type="text"
+                                      placeholder={currentValue ? `now: ${currentValue}` : 'e.g. C5'}
+                                      value={details?.cellRefs?.[colIndex] ?? ''}
+                                      onChange={e => updateTableRowCell(row.id, numCols, colIndex, e.target.value)}
+                                    />
+                                  </td>
+                                ))}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    );
+                  }
 
-                    {chartDetails[block.id] && (
-                      <div className="inlineDetails" style={{ paddingLeft: `${block.depth * 20 + 16}px` }}>
+                  if (item.type === 'image') {
+                    const details = chartDetails[item.id];
+                    return (
+                      <div key={item.id} className="chartBox" style={{ marginLeft: `${item.depth * 20}px` }}>
+                        <span className="chartIcon">🖼</span>
                         <input
                           type="text"
-                          placeholder="Sheet tab (e.g. Testing)"
-                          value={chartDetails[block.id].tabName}
-                          onChange={e =>
-                            setChartDetails(prev => ({ ...prev, [block.id]: { ...prev[block.id], tabName: e.target.value } }))
-                          }
+                          placeholder="Sheet tab"
+                          value={details?.tabName ?? ''}
+                          onChange={e => updateChart(item.id, { tabName: e.target.value })}
                         />
                         <input
                           type="text"
                           placeholder="Exact chart title in Google Sheets"
-                          value={chartDetails[block.id].chartTitle}
-                          onChange={e =>
-                            setChartDetails(prev => ({ ...prev, [block.id]: { ...prev[block.id], chartTitle: e.target.value } }))
-                          }
+                          value={details?.chartTitle ?? ''}
+                          onChange={e => updateChart(item.id, { chartTitle: e.target.value })}
                         />
                       </div>
-                    )}
+                    );
+                  }
 
-                    {tableRowDetails[block.id] && (
-                      <div className="inlineDetails" style={{ paddingLeft: `${block.depth * 20 + 16}px` }}>
-                        <input
-                          type="text"
-                          placeholder="Sheet tab (e.g. Testing)"
-                          value={tableRowDetails[block.id].tabName}
-                          onChange={e =>
-                            setTableRowDetails(prev => ({ ...prev, [block.id]: { ...prev[block.id], tabName: e.target.value } }))
-                          }
-                        />
-                        <input
-                          type="text"
-                          placeholder="Source cells, e.g. C5, D5, E5, F5 (leave a slot blank, e.g. C5, , E5, to keep that column unchanged)"
-                          value={tableRowDetails[block.id].sourceCells}
-                          onChange={e =>
-                            setTableRowDetails(prev => ({ ...prev, [block.id]: { ...prev[block.id], sourceCells: e.target.value } }))
-                          }
-                        />
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  if (item.type === 'heading_1' || item.type === 'heading_2' || item.type === 'heading_3') {
+                    const Tag = item.type === 'heading_1' ? 'h2' : item.type === 'heading_2' ? 'h3' : 'h4';
+                    return (
+                      <Tag key={item.id} className="pageHeading" style={{ marginLeft: `${item.depth * 20}px` }}>
+                        {item.preview || '(empty heading)'}
+                      </Tag>
+                    );
+                  }
+
+                  if (item.type === 'paragraph') {
+                    if (!item.preview) return null; // skip empty paragraphs — pure visual noise
+                    return (
+                      <p key={item.id} className="pageText" style={{ marginLeft: `${item.depth * 20}px` }}>
+                        {item.preview}
+                      </p>
+                    );
+                  }
+
+                  // Other block types (dividers, buttons, etc.) aren't
+                  // fillable and aren't useful context — skip rendering.
+                  return null;
+                })}
               </div>
 
               <button
@@ -560,51 +593,82 @@ export default function SetupPage() {
           font-size: 13px;
           margin-top: 8px;
         }
-        .blockList {
+        .pageLayout {
           border: 1px solid #e4e4e4;
           border-radius: 8px;
-          max-height: 420px;
+          padding: 16px;
+          max-height: 480px;
           overflow-y: auto;
           margin-bottom: 12px;
+          background: #fafafa;
         }
-        .blockGroup {
-          border-bottom: 1px solid #f0f0f0;
+        .pageHeading {
+          color: #1a1a1a;
+          margin: 14px 0 6px;
         }
-        .blockRow {
+        .pageText {
+          color: #555;
+          font-size: 13px;
+          margin: 4px 0;
+        }
+        .chartBox {
           display: flex;
           align-items: center;
-          gap: 10px;
-          padding: 6px 12px;
-          font-size: 13px;
-        }
-        .blockType {
-          color: #888;
-          min-width: 90px;
-          font-family: monospace;
-        }
-        .blockPreview {
-          flex: 1;
-          color: #333;
-        }
-        .blockId {
-          font-family: monospace;
-          font-size: 11px;
-          color: #999;
-          background: #f6f6f6;
-          padding: 2px 6px;
-          border-radius: 4px;
-        }
-        .inlineDetails {
-          display: flex;
           gap: 8px;
-          padding: 4px 12px 10px;
+          border: 1px dashed #ccc;
+          border-radius: 8px;
+          padding: 10px 12px;
+          margin: 8px 0;
+          background: white;
         }
-        .inlineDetails input {
+        .chartIcon {
+          font-size: 18px;
+          opacity: 0.5;
+        }
+        .chartBox input {
           flex: 1;
           padding: 6px 8px;
           border: 1px solid #ccc;
           border-radius: 6px;
           font-size: 13px;
+        }
+        .pageTable {
+          border-collapse: collapse;
+          margin: 10px 0;
+          background: white;
+          font-size: 13px;
+        }
+        .pageTable th,
+        .pageTable td {
+          border: 1px solid #ddd;
+          padding: 4px;
+        }
+        .pageTable th {
+          background: #f0f0f0;
+          font-weight: 600;
+          padding: 6px 8px;
+          text-align: left;
+        }
+        .pageTable th.tabHeader {
+          background: #e8e4fb;
+          color: #5b3fd6;
+          font-size: 11px;
+          text-transform: uppercase;
+        }
+        .pageTable td.tabCell {
+          background: #f6f4ff;
+        }
+        .pageTable input {
+          width: 100%;
+          box-sizing: border-box;
+          border: none;
+          background: transparent;
+          padding: 4px 6px;
+          font-size: 12px;
+        }
+        .pageTable input:focus {
+          outline: 2px solid #1a1a1a;
+          border-radius: 4px;
         }
         .field {
           display: block;

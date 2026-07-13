@@ -4,72 +4,112 @@ import { extractNotionId } from '@/lib/notionId';
 
 export const maxDuration = 60;
 
-type BlockRow = {
+// Non-table blocks are returned flat, in page order, for visual context
+// (headings/paragraphs render as read-only text so the layout reads like
+// the real page) or as a fillable spot (images). Tables are NOT flattened
+// into their rows — they're returned as one structured unit with real
+// column labels and per-row cell previews, so the client can render an
+// actual grid that mirrors the Notion table exactly, with inputs aligned
+// under the right column.
+type SimpleBlockItem = {
+  kind: 'simple';
   id: string;
   type: string;
   depth: number;
   preview: string;
 };
 
-function previewForBlock(block: any): string {
+type TableBlockItem = {
+  kind: 'table';
+  id: string;
+  depth: number;
+  columns: string[]; // header labels (real header text, or "Column N" if the table has no header row)
+  hasRealHeader: boolean;
+  rows: { id: string; cells: string[] }[]; // data rows only — header row is never included here
+};
+
+type PageBlockItem = SimpleBlockItem | TableBlockItem;
+
+function textPreview(block: any): string {
   const type = block.type;
-
-  if (type === 'paragraph' || type === 'heading_1' || type === 'heading_2' || type === 'heading_3') {
-    const text = block[type]?.rich_text?.map((rt: any) => rt.plain_text).join('') ?? '';
-    return text.trim() || '(empty)';
-  }
-
-  if (type === 'image') {
-    const url = block.image?.type === 'external' ? block.image.external?.url : block.image?.file?.url;
-    return url ? `Image (currently: ${url.slice(0, 60)}${url.length > 60 ? '...' : ''})` : 'Image (empty)';
-  }
-
-  if (type === 'table') {
-    const width = block.table?.table_width;
-    const hasHeader = block.table?.has_column_header;
-    return `Table (${width} column${width === 1 ? '' : 's'}${hasHeader ? ', has header row' : ''})`;
-  }
-
-  if (type === 'table_row') {
-    const cells: any[][] = block.table_row?.cells ?? [];
-    const cellText = cells.map(cell => cell.map((rt: any) => rt.plain_text).join('').trim() || '(blank)');
-    return cellText.join(' | ');
-  }
-
-  return `(${type})`;
+  const text = block[type]?.rich_text?.map((rt: any) => rt.plain_text).join('') ?? '';
+  return text.trim();
 }
 
-// Recursively walks the block tree under a page, returning a flat list with
-// depth for indentation. Table rows are included as children of their
-// parent table, one level deeper, so their block IDs are visible right next
-// to the table they belong to — this is the main point of this endpoint:
-// Notion's own UI won't reliably give you a table row's block ID via
-// "copy link," but the API returns it for free.
-async function walkBlocks(blockId: string, depth: number, rows: BlockRow[]): Promise<void> {
+function cellText(cell: any[]): string {
+  return cell.map((rt: any) => rt.plain_text).join('').trim();
+}
+
+async function fetchAllChildren(blockId: string): Promise<any[]> {
+  const results: any[] = [];
   let cursor: string | undefined = undefined;
   do {
-    const response: any = await notion.blocks.children.list({
-      block_id: blockId,
-      start_cursor: cursor,
-    });
-
-    for (const block of response.results) {
-      rows.push({
-        id: block.id,
-        type: block.type,
-        depth,
-        preview: previewForBlock(block),
-      });
-
-      // Always descend into tables (to reach table_row IDs) and anything
-      // else Notion flags as having children.
-      if (block.type === 'table' || block.has_children) {
-        await walkBlocks(block.id, depth + 1, rows);
-      }
-    }
-
+    const response: any = await notion.blocks.children.list({ block_id: blockId, start_cursor: cursor });
+    results.push(...response.results);
     cursor = response.has_more ? response.next_cursor : undefined;
   } while (cursor);
+  return results;
+}
+
+async function describeTable(block: any, depth: number): Promise<TableBlockItem> {
+  const tableRows = await fetchAllChildren(block.id);
+  const hasRealHeader = Boolean(block.table?.has_column_header) && tableRows.length > 0;
+
+  let columns: string[];
+  let dataRows: any[];
+
+  if (hasRealHeader) {
+    const headerCells: any[][] = tableRows[0].table_row?.cells ?? [];
+    columns = headerCells.map(cell => cellText(cell) || 'Column');
+    dataRows = tableRows.slice(1);
+  } else {
+    const width = block.table?.table_width ?? (tableRows[0]?.table_row?.cells?.length ?? 0);
+    columns = Array.from({ length: width }, (_, i) => `Column ${i + 1}`);
+    dataRows = tableRows;
+  }
+
+  return {
+    kind: 'table',
+    id: block.id,
+    depth,
+    columns,
+    hasRealHeader,
+    rows: dataRows.map(row => ({
+      id: row.id,
+      cells: (row.table_row?.cells ?? []).map((cell: any[]) => cellText(cell)),
+    })),
+  };
+}
+
+// Recursively walks the block tree under a page. Tables are described as a
+// single structured unit (see describeTable) rather than flattened into
+// individual table_row entries — this is what lets the client render an
+// actual grid mirroring the Notion table, instead of a flat list of rows.
+async function walkBlocks(blockId: string, depth: number, items: PageBlockItem[]): Promise<void> {
+  const children = await fetchAllChildren(blockId);
+
+  for (const block of children) {
+    if (block.type === 'table') {
+      items.push(await describeTable(block, depth));
+      continue; // table_row children are already captured inside describeTable
+    }
+
+    let preview: string;
+    if (block.type === 'paragraph' || block.type === 'heading_1' || block.type === 'heading_2' || block.type === 'heading_3') {
+      preview = textPreview(block);
+    } else if (block.type === 'image') {
+      const url = block.image?.type === 'external' ? block.image.external?.url : block.image?.file?.url;
+      preview = url ? `Currently: ${url.slice(0, 50)}${url.length > 50 ? '...' : ''}` : '(empty image)';
+    } else {
+      preview = '';
+    }
+
+    items.push({ kind: 'simple', id: block.id, type: block.type, depth, preview });
+
+    if (block.has_children) {
+      await walkBlocks(block.id, depth + 1, items);
+    }
+  }
 }
 
 export async function POST(request: Request) {
@@ -85,10 +125,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Could not find a Notion page/block ID in "${rawPageId}".` }, { status: 400 });
     }
 
-    const rows: BlockRow[] = [];
-    await walkBlocks(pageId, 0, rows);
+    const items: PageBlockItem[] = [];
+    await walkBlocks(pageId, 0, items);
 
-    return NextResponse.json({ pageId, blocks: rows });
+    return NextResponse.json({ pageId, items });
   } catch (error) {
     const message = explainNotionError(error);
     console.error('[SETUP] list-blocks failed:', error);
