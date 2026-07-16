@@ -470,7 +470,19 @@ export default function SetupPage() {
         <section className="step">
           <h2>3. Register the connector</h2>
           <p className="hint">
-            Add this entry to <code>connectors.json</code> in the repo:{' '}
+            Add this connector via the admin page — prefilled with everything from the steps above, no GitHub access needed:
+          </p>
+          <div className="row">
+            <a
+              href={`/admin?connectorId=${encodeURIComponent(connectorId)}&notionPageId=${encodeURIComponent(notionPageId || '')}&appsScriptUrl=${encodeURIComponent(appsScriptUrl)}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <button>Open admin page</button>
+            </a>
+          </div>
+          <p className="hint">
+            Prefer to edit the file directly? Add this entry to <code>connectors.json</code> in the repo:{' '}
             <a href={CONNECTORS_JSON_URL} target="_blank" rel="noreferrer">
               {CONNECTORS_JSON_URL}
             </a>

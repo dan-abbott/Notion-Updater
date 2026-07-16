@@ -207,6 +207,42 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
+### [Deployment] — `/admin` and `/api/admin/*` must stay behind `middleware.ts`'s Basic Auth
+**Rule:** `middleware.ts`'s `matcher` must always include `/admin/:path*` and `/api/admin/:path*`. Never remove these paths from the matcher, and never add a code path that writes to `connectors.json` without going through this gate.
+**Why:** ⚠️ SILENT FAILURE if this is narrowed or removed — `/api/admin/connectors`'s `PUT`/`DELETE` handlers have no auth check of their own; they rely entirely on middleware to have already rejected unauthorized requests before the route handler ever runs. Removing the matcher entry would leave those endpoints — which commit directly to the GitHub repo — completely open.
+**Example (correct):** `matcher: ['/admin/:path*', '/api/admin/:path*']` in `middleware.ts`, unchanged.
+**Example (wrong):** Adding a new admin API route without also confirming it falls under the existing matcher pattern (e.g. a route outside `/api/admin/`) — it would run unauthenticated.
+**Source:** `middleware.ts`, v1.0.0.
+
+---
+
+### [API / External Integrations] — Admin auth fails CLOSED, not open, if misconfigured
+**Rule:** `middleware.ts`'s check requires `expectedPassword` (from `ADMIN_PASSWORD`) to be truthy before any credential comparison can succeed. If the env var is unset, every request to a protected path is rejected — never treat a missing `ADMIN_PASSWORD` as "no auth required."
+**Why:** ⚠️ SILENT FAILURE in the dangerous direction if this logic were inverted — a forgotten env var during a new environment/deploy setup should lock the admin page down harder, not open it up. This is a case where "fail closed" is the only acceptable failure mode, given what this page can do (commit directly to the repo).
+**Example (correct):** `if (expectedPassword && user === expectedUser && pwd === expectedPassword)` — the `&&` on `expectedPassword` ensures an unset var can never satisfy the check.
+**Example (wrong):** `if (!expectedPassword || (user === expectedUser && pwd === expectedPassword))` — treats "not configured" as "let everyone in."
+**Source:** `middleware.ts`, v1.0.0.
+
+---
+
+### [Database / ORM Query Patterns] — Every `connectors.json` write requires the `sha` from the immediately-preceding read
+**Rule:** `commitConnectorsFile()` must always be called with the `sha` returned by the `fetchConnectorsFile()` call from the SAME request — never a cached or earlier `sha`. Every write handler (`PUT`, `DELETE` in `app/api/admin/connectors/route.ts`) re-fetches fresh immediately before committing, rather than trusting a `sha` passed from the client.
+**Why:** ⚠️ SILENT FAILURE (data loss) if this is violated — GitHub's Contents API uses `sha` as an optimistic-concurrency check; committing with a stale `sha` from a much earlier read could silently overwrite someone else's concurrent edit, or (if the API's own check is bypassed by trusting a client-supplied `sha`) succeed when it should have been rejected. Fetching fresh server-side, right before the write, keeps this check meaningful.
+**Example (correct):** `const { connectors, sha } = await fetchConnectorsFile();` immediately before `commitConnectorsFile(connectors, sha, ...)`, both inside the same request handler.
+**Example (wrong):** Accepting a `sha` in the request body from the client and trusting it — the client's copy could be stale by the time the request actually reaches the server.
+**Source:** `lib/github.ts` / `app/api/admin/connectors/route.ts`, v1.0.0.
+
+---
+
+### [File / Module Conventions] — GitHub repo/branch/path for the admin page are hardcoded constants, not env vars
+**Rule:** `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_BRANCH`, and `CONNECTORS_PATH` in `lib/github.ts` are hardcoded, not read from environment variables.
+**Why:** This client has exactly one purpose — this one file, in this one repo, on this one branch. Making these configurable would suggest a generality (multiple repos, branches) that doesn't exist and was never asked for; only `GITHUB_TOKEN` (the actual secret) belongs in env vars.
+**Example (correct):** Hardcoded constants at the top of `lib/github.ts`, changed by editing code (rare) rather than redeploying with different env vars (implies a flexibility this tool doesn't have).
+**Example (wrong):** Adding `GITHUB_OWNER`/`GITHUB_REPO` env vars "for flexibility" when there is, and is expected to remain, exactly one repo this tool ever writes to.
+**Source:** `lib/github.ts`, v1.0.0.
+
+---
+
 ### [Deployment] — `maxDuration` must stay explicit and sized for the current plan
 **Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more table rows). This is also the hard ceiling on how long `waitUntil(runSyncPipeline(...))` is allowed to keep running after `POST` has already responded — it is not a separate, unlimited background-task budget.
 **Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + sync pipeline needs. Since the response is sent almost immediately (see the next invariant), a timeout here would no longer be visible to Notion at all — instead the background pipeline would simply get killed mid-run once `maxDuration` elapses, silently leaving the `[Status]` block on whatever message it last reached.

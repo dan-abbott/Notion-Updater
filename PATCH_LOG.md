@@ -4,7 +4,22 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.9.4] — 2026-07-10
+### [1.0.0] — 2026-07-10
+**Type:** Feature
+**Scope:** New: `app/admin/page.tsx`, `app/api/admin/connectors/route.ts`, `lib/github.ts`, `middleware.ts`. Updated: `app/setup/page.tsx` (Step 3), `.env.example`.
+**Summary:** Added a password-gated `/admin` page for adding, editing, and removing connectors — commits directly to `connectors.json` via GitHub's Contents API, so registering a new connector no longer requires GitHub repo access. Chosen over a Google Sheet-based config store (the other option discussed) specifically to avoid standing up new Google Cloud infrastructure (service account, Sheets API) for a single-purpose config store.
+**Details:**
+- `lib/github.ts`: `fetchConnectorsFile()` reads `connectors.json` from GitHub's Contents API (base64-decoded, parsed, returned with its `sha`); `commitConnectorsFile()` writes a full replacement back, requiring that same `sha` — GitHub itself rejects the write with a 409 if the file changed since the read, which is the built-in protection against two people committing over each other. Repo/branch/path (`dan-abbott/Notion-Updater`, `main`, `connectors.json`) are hardcoded constants, not env vars, since this client only ever has one purpose.
+- `app/api/admin/connectors/route.ts`: `GET` returns the current connector map; `PUT` upserts one connector (add or overwrite, same endpoint since the only difference is whether the ID already existed) and commits; `DELETE` removes one by ID (query param) and commits. Each commit gets a descriptive message ("Add/Update/Remove connector "..." via admin page") for a readable Git history.
+- `middleware.ts`: gates `/admin/:path*` and `/api/admin/:path*` behind HTTP Basic Auth (`ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars) — proportional to this being a small internal tool for a handful of people, not a reason to build a full auth system. Fails closed: if `ADMIN_PASSWORD` isn't set, the check can never pass, so a missing env var means every request is rejected rather than accidentally left open.
+- `app/admin/page.tsx`: lists existing connectors in a table (Edit/Remove per row), plus a form to add or edit one. Reads `?connectorId=&notionPageId=&appsScriptUrl=` query params to prefill the form — this is what Step 3 of the setup wizard now links to.
+- Wizard's Step 3 now opens `/admin` (prefilled from earlier steps) as the primary path, with the raw JSON snippet + direct GitHub link kept as a manual fallback underneath.
+- New required env vars: `GITHUB_TOKEN` (a GitHub PAT with Contents: Read and write on this repo — a fine-grained, repo-scoped token is recommended over a classic all-repo token), `ADMIN_USERNAME` (defaults to `admin`), `ADMIN_PASSWORD` (required; no default, fails closed if unset).
+**Breaking:** No — additive. Existing connector registration by directly editing `connectors.json` in GitHub still works exactly as before; this is a second, easier path to the same file.
+
+---
+
+
 **Type:** Fix
 **Scope:** `app/setup/page.tsx`
 **Summary:** With columns now rendering correctly (v0.9.3), user reported the 4-column layout's chart boxes were too narrow to show both the "Sheet tab" and "Chart title" inputs side by side. Also requested the ability to resize the layout panel itself.
