@@ -534,7 +534,7 @@ export default function SetupPage() {
 
       <style jsx>{`
         .wrap {
-          max-width: 860px;
+          max-width: 1160px;
           margin: 0 auto;
           padding: 40px 24px 80px;
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -619,77 +619,87 @@ export default function SetupPage() {
           margin-top: 8px;
         }
         .pageLayout {
-          border: 1px solid #e4e4e4;
-          border-radius: 8px;
-          padding: 16px;
-          max-height: 480px;
-          overflow-y: auto;
+          border-radius: 12px;
+          padding: 20px;
+          max-height: 560px;
+          overflow: auto;
           margin-bottom: 12px;
-          background: #fafafa;
+          background: #f4f6fb;
         }
         .columnsRow {
           display: flex;
-          gap: 12px;
+          gap: 16px;
           align-items: flex-start;
-          margin: 8px 0;
+          margin: 12px 0;
         }
         .columnBox {
           flex: 1;
-          min-width: 0;
-          border: 1px dashed #c9c9e8;
-          border-radius: 8px;
-          padding: 8px;
-          background: rgba(91, 63, 214, 0.02);
+          min-width: 220px;
+          border-radius: 10px;
+          padding: 14px;
+          background: white;
+          box-shadow: 0 1px 3px rgba(30, 30, 60, 0.08);
         }
         .pageHeading {
-          color: #1a1a1a;
-          margin: 14px 0 6px;
+          color: #22264a;
+          margin: 16px 0 8px;
         }
         .pageText {
           color: #555;
           font-size: 13px;
-          margin: 4px 0;
+          margin: 6px 0;
         }
         .chartBox {
           display: flex;
           align-items: center;
-          gap: 8px;
-          border: 1px dashed #ccc;
-          border-radius: 8px;
-          padding: 10px 12px;
-          margin: 8px 0;
-          background: white;
+          gap: 10px;
+          border-radius: 10px;
+          padding: 14px 16px;
+          margin: 10px 0;
+          background: #eef3ff;
         }
         .chartIcon {
-          font-size: 18px;
-          opacity: 0.5;
+          font-size: 20px;
+          opacity: 0.6;
         }
         .chartBox input {
           flex: 1;
-          padding: 6px 8px;
-          border: 1px solid #ccc;
+          padding: 8px 10px;
+          border: 1px solid #cdd8f5;
           border-radius: 6px;
           font-size: 13px;
+          background: white;
         }
         .pageTable {
-          border-collapse: collapse;
+          border-collapse: separate;
+          border-spacing: 0;
           margin: 10px 0;
           background: white;
           font-size: 13px;
+          width: 100%;
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 1px 3px rgba(30, 30, 60, 0.06);
         }
         .pageTable th,
         .pageTable td {
-          border: 1px solid #ddd;
-          padding: 4px;
+          padding: 8px 10px;
+          border-bottom: 1px solid #eef0f6;
         }
         .pageTable th {
-          background: #f0f0f0;
+          background: #eef1fb;
+          color: #33396b;
           font-weight: 600;
-          padding: 6px 8px;
           text-align: left;
         }
+        .pageTable tr:last-child td {
+          border-bottom: none;
+        }
+        .pageTable tbody tr:nth-child(odd) td {
+          background: #fbfbfe;
+        }
         .pageTable th.tabHeader {
-          background: #e8e4fb;
+          background: #e3ddfb;
           color: #5b3fd6;
           font-size: 11px;
           text-transform: uppercase;

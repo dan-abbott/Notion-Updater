@@ -4,7 +4,20 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.9.1] — 2026-07-10
+### [0.9.2] — 2026-07-10
+**Type:** Fix
+**Scope:** `app/setup/page.tsx`
+**Summary:** User feedback on the page-mirroring layout (v0.9.0/0.9.1): too tight/dense, not enough visual color, and the overall page too narrow for the amount of information Step 2 shows. Widened the container and restyled tables/chart boxes/columns with more padding, softer colors, and card-style shadows instead of dashed borders.
+**Details:**
+- `.wrap` max-width increased from 860px to 1160px — prose (`.lede`/`.hint`) stays readable via its own `max-width: 64ch`, so only the wide Step 2 content actually benefits.
+- `.pageLayout`, `.columnBox`, `.chartBox`, `.pageTable` restyled: card-shadow style instead of dashed borders, soft color-tinted backgrounds (light blue for chart boxes, light indigo/white alternating rows for tables), more padding throughout, rounded corners.
+- `.pageLayout` now scrolls both directions (`overflow: auto`) instead of only vertically, since wide column layouts can exceed the container width.
+- Investigating a separate report that side-by-side columns (v0.9.1) aren't visually appearing despite being deployed — root cause not yet confirmed as of this entry.
+**Breaking:** No — visual only.
+
+---
+
+
 **Type:** Feature
 **Scope:** `app/api/setup/list-blocks/route.ts`, `app/setup/page.tsx`
 **Summary:** User's Notion page grows more complex (1 column → 2 → 4, nested), and the flat, depth-indented layout made it genuinely ambiguous which image/table belonged to which column. Added explicit `column_list`/`column` detection so the wizard renders actual side-by-side columns, matching the page structure exactly — including nested columns within columns.
