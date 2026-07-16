@@ -4,7 +4,18 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.9.3] — 2026-07-10
+### [0.9.4] — 2026-07-10
+**Type:** Fix
+**Scope:** `app/setup/page.tsx`
+**Summary:** With columns now rendering correctly (v0.9.3), user reported the 4-column layout's chart boxes were too narrow to show both the "Sheet tab" and "Chart title" inputs side by side. Also requested the ability to resize the layout panel itself.
+**Details:**
+- `.chartBox` changed from a horizontal flex row to a vertical stack — the two inputs (sheet tab, chart title) now stack one above the other, each getting the box's full width, instead of splitting it side by side. This holds up regardless of how narrow a column gets (4+ columns, deeply nested, etc.).
+- `.pageLayout` now has `resize: both`, giving it a native browser drag handle (bottom-right corner) to manually resize wider/taller. Switched from `max-height` to a fixed starting `height` (560px) plus `min-height`/`min-width`, since browser resize behavior expects an explicit starting size to adjust from.
+**Breaking:** No — visual only.
+
+---
+
+
 **Type:** Fix
 **Scope:** `app/setup/page.tsx`
 **Summary:** Root cause found for the reported "columns aren't rendering side-by-side" bug — confirmed via the actual `list-blocks` API response that server-side detection was 100% correct (`kind: 'columns'` items present with exactly the right grouping). The bug was styled-jsx's scoped `<style jsx>` failing to apply to ANY element rendered by the extracted `renderItem()` helper function (not just columns — table header colors, chart box backgrounds, and every other v0.9.0-0.9.2 style were silently not applying either, confirmed by a follow-up screenshot showing plain unstyled output even after a hard refresh ruled out caching).

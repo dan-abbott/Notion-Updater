@@ -621,10 +621,13 @@ export default function SetupPage() {
         .pageLayout {
           border-radius: 12px;
           padding: 20px;
-          max-height: 560px;
+          height: 560px;
+          min-height: 300px;
+          min-width: 400px;
           overflow: auto;
           margin-bottom: 12px;
           background: #f4f6fb;
+          resize: both;
         }
         .columnsRow {
           display: flex;
@@ -651,8 +654,9 @@ export default function SetupPage() {
         }
         .chartBox {
           display: flex;
-          align-items: center;
-          gap: 10px;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 8px;
           border-radius: 10px;
           padding: 14px 16px;
           margin: 10px 0;
