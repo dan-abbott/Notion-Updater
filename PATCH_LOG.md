@@ -4,7 +4,18 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [1.0.0] — 2026-07-10
+### [1.0.1] — 2026-07-10
+**Type:** Fix
+**Scope:** `app/admin/page.tsx`, `app/setup/page.tsx`
+**Summary:** User reported the flow "just stops" after clicking "Add connector" from the wizard. Root cause: the wizard's Step 3 opens `/admin` in a new tab (`target="_blank"`), so after saving there, the original wizard tab is untouched but nothing indicated that — it looked like a dead end instead of "switch back to the other tab."
+**Details:**
+- `app/admin/page.tsx`: tracks whether the page was opened with wizard prefill query params (`cameFromWizard`). After a successful save that originated that way, shows a green banner: "Connector added! ... switch back to your Setup Wizard tab ... and click Next." The flag resets after firing once, so it doesn't reappear for unrelated edits made later in the same session.
+- `app/setup/page.tsx`: Step 3 now says outright, next to the button, that it opens in a new tab and to come back afterward — set expectations before the click, not just after.
+**Breaking:** No.
+
+---
+
+
 **Type:** Feature
 **Scope:** New: `app/admin/page.tsx`, `app/api/admin/connectors/route.ts`, `lib/github.ts`, `middleware.ts`. Updated: `app/setup/page.tsx` (Step 3), `.env.example`.
 **Summary:** Added a password-gated `/admin` page for adding, editing, and removing connectors — commits directly to `connectors.json` via GitHub's Contents API, so registering a new connector no longer requires GitHub repo access. Chosen over a Google Sheet-based config store (the other option discussed) specifically to avoid standing up new Google Cloud infrastructure (service account, Sheets API) for a single-purpose config store.

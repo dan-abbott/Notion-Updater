@@ -31,6 +31,8 @@ function AdminPageContent() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [cameFromWizard, setCameFromWizard] = useState(false);
+  const [justSavedFromWizard, setJustSavedFromWizard] = useState(false);
 
   async function loadConnectors() {
     setLoading(true);
@@ -56,6 +58,7 @@ function AdminPageContent() {
     if (prefillId) setConnectorId(prefillId);
     if (prefillPageId) setNotionPageId(prefillPageId);
     if (prefillUrl) setAppsScriptUrl(prefillUrl);
+    if (prefillId || prefillPageId || prefillUrl) setCameFromWizard(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -91,6 +94,10 @@ function AdminPageContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not save connector.');
       setConnectors(data.connectors);
+      if (cameFromWizard) {
+        setJustSavedFromWizard(true);
+        setCameFromWizard(false); // only show the banner once, not for later unrelated edits
+      }
       resetForm();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Unknown error');
@@ -125,6 +132,13 @@ function AdminPageContent() {
         Add, edit, or remove connectors here — this commits directly to <code>connectors.json</code> in the repo, so
         nobody needs GitHub access just to register a new page.
       </p>
+
+      {justSavedFromWizard && (
+        <div className="wizardBanner">
+          ✅ Connector added! This opened in a new tab — switch back to your <strong>Setup Wizard</strong> tab
+          (it's still on Step 3) and click <strong>Next</strong> to continue.
+        </div>
+      )}
 
       {loading && <p className="hint">Loading connectors…</p>}
       {loadError && <p className="error">{loadError}</p>}
@@ -228,6 +242,15 @@ function AdminPageContent() {
           color: #555;
           margin-bottom: 24px;
           max-width: 64ch;
+        }
+        .wizardBanner {
+          background: #eafbe7;
+          border: 1px solid #b6e6ae;
+          color: #1e5f2a;
+          border-radius: 8px;
+          padding: 12px 16px;
+          font-size: 14px;
+          margin-bottom: 20px;
         }
         .hint {
           color: #666;

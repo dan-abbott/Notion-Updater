@@ -472,6 +472,9 @@ export default function SetupPage() {
           <p className="hint">
             Add this connector via the admin page — prefilled with everything from the steps above, no GitHub access needed:
           </p>
+          <p className="hint">
+            Opens in a new tab — after adding it there, come back to <strong>this</strong> tab and click Next below.
+          </p>
           <div className="row">
             <a
               href={`/admin?connectorId=${encodeURIComponent(connectorId)}&notionPageId=${encodeURIComponent(notionPageId || '')}&appsScriptUrl=${encodeURIComponent(appsScriptUrl)}`}
