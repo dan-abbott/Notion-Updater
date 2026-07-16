@@ -198,6 +198,15 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
+### [UI / Component Constraints] — Use `<style jsx global>`, not scoped `<style jsx>`, since rendering is split across helper functions
+**Rule:** `app/setup/page.tsx`'s style block must stay `<style jsx global>`. Do not revert to scoped `<style jsx>` while `renderItem()` (or any other JSX-returning helper function extracted for recursion/reuse) exists.
+**Why:** ⚠️ SILENT FAILURE, and a confusing one — scoped styled-jsx only reliably attaches its scoping class to JSX literals written directly in the component's own return statement. Elements returned by a separate helper function (like the recursive `renderItem()`, needed since v0.9.1 to render nested Notion columns) fall outside that scoping, so their styles silently don't apply at all — not just layout-related styles, ALL of them (colors, spacing, everything). This produced a confusing bug report ("columns don't work") that was actually a much bigger silent failure (nothing rendered by `renderItem()` was ever styled), only fully diagnosed by comparing an actual API response (proving the data/logic was correct) against a screenshot (proving the CSS wasn't applying at all).
+**Example (correct):** `<style jsx global>{...}` — unscoped, applies by plain class name regardless of which function rendered the element.
+**Example (wrong):** `<style jsx>{...}` (scoped) while any rendering logic lives in a helper function separate from the component's literal return statement.
+**Source:** User-reported column rendering bug, root-caused via API response vs. screenshot comparison; fixed in `app/setup/page.tsx` v0.9.3.
+
+---
+
 ### [Deployment] — `maxDuration` must stay explicit and sized for the current plan
 **Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more table rows). This is also the hard ceiling on how long `waitUntil(runSyncPipeline(...))` is allowed to keep running after `POST` has already responded — it is not a separate, unlimited background-task budget.
 **Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + sync pipeline needs. Since the response is sent almost immediately (see the next invariant), a timeout here would no longer be visible to Notion at all — instead the background pipeline would simply get killed mid-run once `maxDuration` elapses, silently leaving the `[Status]` block on whatever message it last reached.

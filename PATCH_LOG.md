@@ -4,7 +4,18 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.9.2] — 2026-07-10
+### [0.9.3] — 2026-07-10
+**Type:** Fix
+**Scope:** `app/setup/page.tsx`
+**Summary:** Root cause found for the reported "columns aren't rendering side-by-side" bug — confirmed via the actual `list-blocks` API response that server-side detection was 100% correct (`kind: 'columns'` items present with exactly the right grouping). The bug was styled-jsx's scoped `<style jsx>` failing to apply to ANY element rendered by the extracted `renderItem()` helper function (not just columns — table header colors, chart box backgrounds, and every other v0.9.0-0.9.2 style were silently not applying either, confirmed by a follow-up screenshot showing plain unstyled output even after a hard refresh ruled out caching).
+**Details:**
+- Styled-jsx's default scoped mode only reliably attaches its scoping class to JSX literals written directly in the component's own return statement. `renderItem()` was extracted as a separate function (needed for recursion into nested columns, v0.9.1) — its returned JSX falls outside what the scoped styles reliably match.
+- Changed `<style jsx>` to `<style jsx global>`, which outputs unscoped CSS that applies by class name regardless of which function produced the element. Safe here since `/setup` is the only page in this app and its class names don't need isolation from anything else.
+**Breaking:** No — visual fix only; this is what makes v0.9.0 through v0.9.2's actual intended styling and column layout finally take effect.
+
+---
+
+
 **Type:** Fix
 **Scope:** `app/setup/page.tsx`
 **Summary:** User feedback on the page-mirroring layout (v0.9.0/0.9.1): too tight/dense, not enough visual color, and the overall page too narrow for the amount of information Step 2 shows. Widened the container and restyled tables/chart boxes/columns with more padding, softer colors, and card-style shadows instead of dashed borders.

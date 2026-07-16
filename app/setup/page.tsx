@@ -532,7 +532,7 @@ export default function SetupPage() {
         </section>
       )}
 
-      <style jsx>{`
+      <style jsx global>{`
         .wrap {
           max-width: 1160px;
           margin: 0 auto;
