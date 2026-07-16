@@ -4,13 +4,9 @@ import { extractNotionId } from '@/lib/notionId';
 
 export const maxDuration = 60;
 
-// Non-table blocks are returned flat, in page order, for visual context
-// (headings/paragraphs render as read-only text so the layout reads like
-// the real page) or as a fillable spot (images). Tables are NOT flattened
-// into their rows — they're returned as one structured unit with real
-// column labels and per-row cell previews, so the client can render an
-// actual grid that mirrors the Notion table exactly, with inputs aligned
-// under the right column.
+// Non-table, non-column blocks are returned flat, in page order, for
+// visual context (headings/paragraphs render as read-only text so the
+// layout reads like the real page) or as a fillable spot (images).
 type SimpleBlockItem = {
   kind: 'simple';
   id: string;
@@ -19,6 +15,10 @@ type SimpleBlockItem = {
   preview: string;
 };
 
+// Tables are NOT flattened into their rows — they're returned as one
+// structured unit with real column labels and per-row cell previews, so
+// the client can render an actual grid that mirrors the Notion table
+// exactly, with inputs aligned under the right column.
 type TableBlockItem = {
   kind: 'table';
   id: string;
@@ -28,7 +28,22 @@ type TableBlockItem = {
   rows: { id: string; cells: string[] }[]; // data rows only — header row is never included here
 };
 
-type PageBlockItem = SimpleBlockItem | TableBlockItem;
+// A Notion column_list is a container of side-by-side `column` blocks.
+// Flattening these (the pre-this-fix behavior) loses exactly the
+// information that matters — which items sit together in the same column
+// vs. a sibling column — so it's returned as its own unit: one array of
+// items PER COLUMN, letting the client render them side by side. Columns
+// can nest (a column containing another column_list), which this handles
+// naturally since parseChildren() is the same recursive function at every
+// level.
+type ColumnsBlockItem = {
+  kind: 'columns';
+  id: string;
+  depth: number;
+  columns: PageBlockItem[][];
+};
+
+type PageBlockItem = SimpleBlockItem | TableBlockItem | ColumnsBlockItem;
 
 function textPreview(block: any): string {
   const type = block.type;
@@ -81,17 +96,28 @@ async function describeTable(block: any, depth: number): Promise<TableBlockItem>
   };
 }
 
-// Recursively walks the block tree under a page. Tables are described as a
-// single structured unit (see describeTable) rather than flattened into
-// individual table_row entries — this is what lets the client render an
-// actual grid mirroring the Notion table, instead of a flat list of rows.
-async function walkBlocks(blockId: string, depth: number, items: PageBlockItem[]): Promise<void> {
+// Recursively parses the block tree under a container, returning items
+// rather than mutating a shared list — this is what lets column_list
+// handling recurse cleanly into each column and get back its own nested
+// array, instead of everything flattening into one long list regardless
+// of which column it came from.
+async function parseChildren(blockId: string, depth: number): Promise<PageBlockItem[]> {
   const children = await fetchAllChildren(blockId);
+  const items: PageBlockItem[] = [];
 
   for (const block of children) {
     if (block.type === 'table') {
       items.push(await describeTable(block, depth));
       continue; // table_row children are already captured inside describeTable
+    }
+
+    if (block.type === 'column_list') {
+      const columnContainers = await fetchAllChildren(block.id); // each is type 'column'
+      const columns = await Promise.all(
+        columnContainers.map(col => parseChildren(col.id, depth + 1))
+      );
+      items.push({ kind: 'columns', id: block.id, depth, columns });
+      continue; // column contents are already captured above
     }
 
     let preview: string;
@@ -107,9 +133,12 @@ async function walkBlocks(blockId: string, depth: number, items: PageBlockItem[]
     items.push({ kind: 'simple', id: block.id, type: block.type, depth, preview });
 
     if (block.has_children) {
-      await walkBlocks(block.id, depth + 1, items);
+      const nested = await parseChildren(block.id, depth + 1);
+      items.push(...nested);
     }
   }
+
+  return items;
 }
 
 export async function POST(request: Request) {
@@ -125,8 +154,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Could not find a Notion page/block ID in "${rawPageId}".` }, { status: 400 });
     }
 
-    const items: PageBlockItem[] = [];
-    await walkBlocks(pageId, 0, items);
+    const items = await parseChildren(pageId, 0);
 
     return NextResponse.json({ pageId, items });
   } catch (error) {

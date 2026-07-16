@@ -4,7 +4,19 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [0.9.0] — 2026-07-10
+### [0.9.1] — 2026-07-10
+**Type:** Feature
+**Scope:** `app/api/setup/list-blocks/route.ts`, `app/setup/page.tsx`
+**Summary:** User's Notion page grows more complex (1 column → 2 → 4, nested), and the flat, depth-indented layout made it genuinely ambiguous which image/table belonged to which column. Added explicit `column_list`/`column` detection so the wizard renders actual side-by-side columns, matching the page structure exactly — including nested columns within columns.
+**Details:**
+- `list-blocks` restructured from a mutate-a-shared-array walk (`walkBlocks`) to a returning recursive parse (`parseChildren`), which is what makes clean recursion into columns possible — each column's contents come back as their own nested array rather than flattening into one shared list.
+- Added a `{ kind: 'columns', id, depth, columns: PageBlockItem[][] }` item type: one inner array per Notion `column`, each containing that column's own items (which can themselves include more `columns` items, for nested column_lists — handled automatically since `parseChildren()` is the same function at every level).
+- The wizard's rendering (`renderItem()`, now a proper recursive function rather than an inline one-level `.map()`) renders `columns` items as a flex row of bordered boxes, one per column, each recursively rendering its own contents — so a 4-column section in Notion renders as 4 side-by-side boxes in the wizard, and a nested column inside one of those renders as further side-by-side boxes within that box.
+**Breaking:** No — pages with no columns render identically to before; this only adds handling for a structure that was previously silently flattened.
+
+---
+
+
 **Type:** Feature
 **Scope:** `app/api/setup/list-blocks/route.ts`, `app/setup/page.tsx`
 **Summary:** Replaced the flat, block-ID-labeled list in Step 2 with a layout that mirrors the actual Notion page — real HTML tables with inputs aligned directly under each column, headings/paragraphs as read-only context, images as inline chart-input boxes. Block IDs are no longer shown anywhere in the UI (still used internally, just not displayed).

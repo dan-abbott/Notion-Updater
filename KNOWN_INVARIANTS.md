@@ -180,6 +180,24 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
+### [Database / ORM Query Patterns] — `column_list` blocks are returned as one nested-array-per-column unit, never flattened
+**Rule:** `parseChildren()` special-cases `block.type === 'column_list'` the same way it special-cases `table`: fetch its `column` children, recursively parse each one's contents, and return `{ kind: 'columns', columns: PageBlockItem[][] }` — one array per column — rather than flattening everything into the parent's shared item list at increasing depth.
+**Why:** ⚠️ SILENT FAILURE if this reverts to flattening — depth-based indentation alone cannot distinguish "these five images are one each in five side-by-side columns" from "these five images are nested five levels deep in a single column," which was the exact ambiguity reported in production once a real page grew from 1 to 2 to 4 columns (with nesting). Losing this distinction doesn't error, it just silently produces a wizard layout a person can no longer correctly interpret.
+**Example (correct):** A `column_list` with 4 columns produces one `columns` item with a 4-element `columns` array, each rendered as its own side-by-side box.
+**Example (wrong):** Treating `column_list`/`column` as just another generically-recursed container (the pre-v0.9.1 behavior) — everything inside ends up in one flat list, indented, with no visual indication of which column anything belongs to.
+**Source:** User-reported ambiguity as their Notion page grew more complex; fixed in `list-blocks`/`app/setup/page.tsx` v0.9.1.
+
+---
+
+### [UI / Component Constraints] — Page-item rendering is one recursive function, not an inline single-level map
+**Rule:** `renderItem()` in `app/setup/page.tsx` must stay a proper recursive function (calling itself for nested `columns` items), not get reverted to an inline `.map()` callback that can only handle one level.
+**Why:** Nested columns (a column containing another column_list) are a real, observed page structure, not a hypothetical — an inline single-level map has no way to recurse into a column's own contents, which would silently drop or misrender anything nested more than one level deep.
+**Example (correct):** `renderItem()` calls itself for each item inside a `columns` item's inner arrays.
+**Example (wrong):** Inlining the render logic back into `blocks.map(item => { if (item.kind === 'columns') { ...but can't recurse... } })` — breaks as soon as a column contains another column_list.
+**Source:** `app/setup/page.tsx` v0.9.1.
+
+---
+
 ### [Deployment] — `maxDuration` must stay explicit and sized for the current plan
 **Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more table rows). This is also the hard ceiling on how long `waitUntil(runSyncPipeline(...))` is allowed to keep running after `POST` has already responded — it is not a separate, unlimited background-task budget.
 **Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + sync pipeline needs. Since the response is sent almost immediately (see the next invariant), a timeout here would no longer be visible to Notion at all — instead the background pipeline would simply get killed mid-run once `maxDuration` elapses, silently leaving the `[Status]` block on whatever message it last reached.

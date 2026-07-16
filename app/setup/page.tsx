@@ -23,7 +23,14 @@ type TableBlockItem = {
   rows: { id: string; cells: string[] }[];
 };
 
-type PageBlockItem = SimpleBlockItem | TableBlockItem;
+type ColumnsBlockItem = {
+  kind: 'columns';
+  id: string;
+  depth: number;
+  columns: PageBlockItem[][];
+};
+
+type PageBlockItem = SimpleBlockItem | TableBlockItem | ColumnsBlockItem;
 
 type ChartDetails = { tabName: string; chartTitle: string };
 type TableRowDetails = { tabName: string; cellRefs: string[] };
@@ -196,6 +203,112 @@ export default function SetupPage() {
   );
   const buttonUrl = `https://${BASE_URL}/api/notion-sync/${connectorId || '<connector-id>'}`;
 
+  // Renders one page item. Defined inside the component so it can read
+  // chartDetails/tableRowDetails and call the update* functions directly.
+  // Recurses for 'columns' items — each Notion column can itself contain
+  // more columns (nested column_lists), which this handles naturally by
+  // just calling itself on each inner array.
+  function renderItem(item: PageBlockItem): JSX.Element | null {
+    if (item.kind === 'columns') {
+      return (
+        <div key={item.id} className="columnsRow" style={{ marginLeft: `${item.depth * 20}px` }}>
+          {item.columns.map((colItems, i) => (
+            <div key={i} className="columnBox">
+              {colItems.map(sub => renderItem(sub))}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (item.kind === 'table') {
+      return (
+        <table key={item.id} className="pageTable" style={{ marginLeft: `${item.depth * 20}px` }}>
+          <thead>
+            <tr>
+              <th className="tabHeader">Tab</th>
+              {item.columns.map((col, i) => (
+                <th key={i}>{col}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {item.rows.map(row => {
+              const numCols = item.columns.length;
+              const details = tableRowDetails[row.id];
+              return (
+                <tr key={row.id}>
+                  <td className="tabCell">
+                    <input
+                      type="text"
+                      placeholder="Tab"
+                      value={details?.tabName ?? ''}
+                      onChange={e => updateTableRowTab(row.id, numCols, e.target.value)}
+                    />
+                  </td>
+                  {row.cells.map((currentValue, colIndex) => (
+                    <td key={colIndex}>
+                      <input
+                        type="text"
+                        placeholder={currentValue ? `now: ${currentValue}` : 'e.g. C5'}
+                        value={details?.cellRefs?.[colIndex] ?? ''}
+                        onChange={e => updateTableRowCell(row.id, numCols, colIndex, e.target.value)}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      );
+    }
+
+    // item.kind === 'simple'
+    if (item.type === 'image') {
+      const details = chartDetails[item.id];
+      return (
+        <div key={item.id} className="chartBox" style={{ marginLeft: `${item.depth * 20}px` }}>
+          <span className="chartIcon">🖼</span>
+          <input
+            type="text"
+            placeholder="Sheet tab"
+            value={details?.tabName ?? ''}
+            onChange={e => updateChart(item.id, { tabName: e.target.value })}
+          />
+          <input
+            type="text"
+            placeholder="Exact chart title in Google Sheets"
+            value={details?.chartTitle ?? ''}
+            onChange={e => updateChart(item.id, { chartTitle: e.target.value })}
+          />
+        </div>
+      );
+    }
+
+    if (item.type === 'heading_1' || item.type === 'heading_2' || item.type === 'heading_3') {
+      const Tag = item.type === 'heading_1' ? 'h2' : item.type === 'heading_2' ? 'h3' : 'h4';
+      return (
+        <Tag key={item.id} className="pageHeading" style={{ marginLeft: `${item.depth * 20}px` }}>
+          {item.preview || '(empty heading)'}
+        </Tag>
+      );
+    }
+
+    if (item.type === 'paragraph') {
+      if (!item.preview) return null; // skip empty paragraphs — pure visual noise
+      return (
+        <p key={item.id} className="pageText" style={{ marginLeft: `${item.depth * 20}px` }}>
+          {item.preview}
+        </p>
+      );
+    }
+
+    // Other block types (dividers, buttons, etc.) aren't fillable and
+    // aren't useful context — skip rendering.
+    return null;
+  }
+
   return (
     <main className="wrap">
       <h1>Set up a new connector</h1>
@@ -309,95 +422,7 @@ export default function SetupPage() {
                 image to sync a chart into it. For tables, fill in a <strong>sheet cell</strong> under each column you want
                 synced — leave a cell blank to leave that column unchanged. Nothing you leave blank gets included.
               </p>
-              <div className="pageLayout">
-                {blocks.map(item => {
-                  if (item.kind === 'table') {
-                    return (
-                      <table key={item.id} className="pageTable" style={{ marginLeft: `${item.depth * 20}px` }}>
-                        <thead>
-                          <tr>
-                            <th className="tabHeader">Tab</th>
-                            {item.columns.map((col, i) => (
-                              <th key={i}>{col}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {item.rows.map(row => {
-                            const numCols = item.columns.length;
-                            const details = tableRowDetails[row.id];
-                            return (
-                              <tr key={row.id}>
-                                <td className="tabCell">
-                                  <input
-                                    type="text"
-                                    placeholder="Tab"
-                                    value={details?.tabName ?? ''}
-                                    onChange={e => updateTableRowTab(row.id, numCols, e.target.value)}
-                                  />
-                                </td>
-                                {row.cells.map((currentValue, colIndex) => (
-                                  <td key={colIndex}>
-                                    <input
-                                      type="text"
-                                      placeholder={currentValue ? `now: ${currentValue}` : 'e.g. C5'}
-                                      value={details?.cellRefs?.[colIndex] ?? ''}
-                                      onChange={e => updateTableRowCell(row.id, numCols, colIndex, e.target.value)}
-                                    />
-                                  </td>
-                                ))}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    );
-                  }
-
-                  if (item.type === 'image') {
-                    const details = chartDetails[item.id];
-                    return (
-                      <div key={item.id} className="chartBox" style={{ marginLeft: `${item.depth * 20}px` }}>
-                        <span className="chartIcon">🖼</span>
-                        <input
-                          type="text"
-                          placeholder="Sheet tab"
-                          value={details?.tabName ?? ''}
-                          onChange={e => updateChart(item.id, { tabName: e.target.value })}
-                        />
-                        <input
-                          type="text"
-                          placeholder="Exact chart title in Google Sheets"
-                          value={details?.chartTitle ?? ''}
-                          onChange={e => updateChart(item.id, { chartTitle: e.target.value })}
-                        />
-                      </div>
-                    );
-                  }
-
-                  if (item.type === 'heading_1' || item.type === 'heading_2' || item.type === 'heading_3') {
-                    const Tag = item.type === 'heading_1' ? 'h2' : item.type === 'heading_2' ? 'h3' : 'h4';
-                    return (
-                      <Tag key={item.id} className="pageHeading" style={{ marginLeft: `${item.depth * 20}px` }}>
-                        {item.preview || '(empty heading)'}
-                      </Tag>
-                    );
-                  }
-
-                  if (item.type === 'paragraph') {
-                    if (!item.preview) return null; // skip empty paragraphs — pure visual noise
-                    return (
-                      <p key={item.id} className="pageText" style={{ marginLeft: `${item.depth * 20}px` }}>
-                        {item.preview}
-                      </p>
-                    );
-                  }
-
-                  // Other block types (dividers, buttons, etc.) aren't
-                  // fillable and aren't useful context — skip rendering.
-                  return null;
-                })}
-              </div>
+              <div className="pageLayout">{blocks.map(item => renderItem(item))}</div>
 
               <button
                 onClick={handleGenerateMapping}
@@ -601,6 +626,20 @@ export default function SetupPage() {
           overflow-y: auto;
           margin-bottom: 12px;
           background: #fafafa;
+        }
+        .columnsRow {
+          display: flex;
+          gap: 12px;
+          align-items: flex-start;
+          margin: 8px 0;
+        }
+        .columnBox {
+          flex: 1;
+          min-width: 0;
+          border: 1px dashed #c9c9e8;
+          border-radius: 8px;
+          padding: 8px;
+          background: rgba(91, 63, 214, 0.02);
         }
         .pageHeading {
           color: #1a1a1a;
