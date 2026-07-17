@@ -3,6 +3,14 @@ import connectorsData from '../connectors.json';
 export type ConnectorConfig = {
   notionPageId: string;
   appsScriptUrl: string;
+  // Google Sheet ID this connector's script is bound to. Purely informational
+  // — nothing in the sync pipeline reads it, since the Apps Script deployment
+  // (appsScriptUrl) is already implicitly tied to one specific spreadsheet.
+  // It exists so a connector's Sheet can be identified/linked directly from
+  // connectors.json without hunting for it, and so the admin page's "Edit
+  // mapping" flow has it available to pass along. Optional since connectors
+  // registered before this field existed won't have it.
+  sheetId?: string;
 };
 
 // One entry per connected Notion page. Each page has its own Google Sheet

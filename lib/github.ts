@@ -13,6 +13,7 @@ const CONTENTS_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO
 export type ConnectorConfig = {
   notionPageId: string;
   appsScriptUrl: string;
+  sheetId?: string;
 };
 
 export type ConnectorsFile = {

@@ -8,6 +8,7 @@ import { generateMappingRows, ChartMapping, TableRowMapping } from '@/lib/genera
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
+    const connectorId: string = body?.connectorId?.trim() || '';
     const charts: ChartMapping[] = Array.isArray(body?.charts) ? body.charts : [];
     const tableRows: TableRowMapping[] = Array.isArray(body?.tableRows) ? body.tableRows : [];
 
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'At least one chart or table row mapping is required.' }, { status: 400 });
     }
 
-    const mappingRows = generateMappingRows(charts, tableRows);
+    const mappingRows = generateMappingRows(connectorId, charts, tableRows);
     return NextResponse.json({ mappingRows });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error occurred';

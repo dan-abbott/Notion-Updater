@@ -2,9 +2,5 @@
   "example": {
     "notionPageId": "REPLACE_WITH_NOTION_PAGE_ID",
     "appsScriptUrl": "REPLACE_WITH_APPS_SCRIPT_WEB_APP_URL"
-  },
-  "sturdy-maple": {
-    "notionPageId": "3987faa6-6864-80f3-82c3-fff70d2e0826",
-    "appsScriptUrl": "https://script.google.com/macros/s/AKfycbx5tcFyDC9m5C6Cye_SdSIuHteOdVzfnx_Ah2lxcL4S6mMqaYzdsdDD_7dqTkO_k9evDQ/exec"
   }
 }

@@ -243,6 +243,24 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
+### [Database / ORM Query Patterns] — `sheetId` is informational ONLY; nothing in the sync pipeline may ever read it
+**Rule:** `ConnectorConfig.sheetId` exists purely so `connectors.json` has a clear, direct link to the actual Google Sheet a connector belongs to. It must never become a dependency of `route.ts`'s sync pipeline — the Apps Script deployment (`appsScriptUrl`) is already implicitly bound to one specific spreadsheet, so there is no scenario where the sync needs `sheetId` to function.
+**Why:** Introducing a code path that reads `sheetId` to do something functional (e.g. calling the Sheets API directly) would be a much bigger change — new Google Cloud service account infrastructure, credentials, and a share-the-Sheet-with-the-service-account setup step per connector — that was explicitly scoped OUT when this field was added. Adding such a dependency later should be a deliberate, separate decision, not something that creeps in because the field happens to already exist.
+**Example (correct):** `sheetId` only ever appears in `connectors.json`, the admin page's form/table, and the wizard's Step 1 field/Step 3 JSON snippet — never in `route.ts`.
+**Example (wrong):** Adding a "let's also read `sheetId` to auto-write the Mapping sheet" feature by quietly extending the sync pipeline — this needs the full service-account infrastructure discussion first, not an incremental slip-in.
+**Source:** User-specified scope boundary during the "add sheetId, skip auto-write" design discussion; implemented in `lib/connectors.ts`/`lib/github.ts` v1.1.0.
+
+---
+
+### [UI / Component Constraints] — "Edit mapping" only ever ADDS to a Mapping sheet; it can't reconcile against what's already there
+**Rule:** The wizard's edit-mode (arriving via the admin page's "Edit mapping" button) generates a fresh set of Mapping rows from scratch, based on whatever is currently selected in Step 2 — it does NOT read the connector's existing Mapping tab content first. The generated rows are meant to be pasted at the BOTTOM of the existing tab (appended), never used to overwrite it.
+**Why:** ⚠️ SILENT FAILURE risk if this expectation isn't clearly communicated — pasting edit-mode output at cell A1 (overwriting the existing Mapping content) would silently delete every previously-working mapping that wasn't re-selected in this session, since the wizard has no way to know what's already there.
+**Example (correct):** Step 2's edit-mode banner explicitly says to paste new rows at the bottom, not overwrite.
+**Example (wrong):** Treating edit-mode output as a full replacement for the Mapping tab — it only ever represents what was freshly selected in that session, not the connector's complete mapping state.
+**Source:** Explicit scope boundary from the "build update capability, skip auto-write" design discussion; `app/setup/page.tsx` v1.1.0.
+
+---
+
 ### [Deployment] — `maxDuration` must stay explicit and sized for the current plan
 **Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more table rows). This is also the hard ceiling on how long `waitUntil(runSyncPipeline(...))` is allowed to keep running after `POST` has already responded — it is not a separate, unlimited background-task budget.
 **Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + sync pipeline needs. Since the response is sent almost immediately (see the next invariant), a timeout here would no longer be visible to Notion at all — instead the background pipeline would simply get killed mid-run once `maxDuration` elapses, silently leaving the `[Status]` block on whatever message it last reached.

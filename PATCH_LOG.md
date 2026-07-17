@@ -4,7 +4,22 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [1.0.1] — 2026-07-10
+### [1.1.0] — 2026-07-10
+**Type:** Feature
+**Scope:** `lib/connectors.ts`, `lib/github.ts`, `lib/googleSheetId.ts` (new), `lib/generateConnectorFiles.ts`, `app/api/setup/generate-mapping/route.ts`, `app/setup/page.tsx`, `app/admin/page.tsx`, `app/api/admin/connectors/route.ts`
+**Summary:** Added an optional `sheetId` field to connector config (for a clear link from `connectors.json` to the actual Google Sheet), and a real "edit an existing connector's mapping" path — the admin page's connector table now has an **Edit mapping** button that deep-links into the wizard, pre-filled and jumping straight to Step 2 with blocks already listed. Auto-writing to the Mapping sheet itself was explicitly scoped OUT of this change (would require new Google Sheets API infrastructure) — this only makes the manual "generate new rows, paste them in" path much less clunky to reach for an existing connector.
+**Details:**
+- `ConnectorConfig` (both `lib/connectors.ts` and `lib/github.ts`) gained an optional `sheetId?: string`. Purely informational — nothing in the sync pipeline reads it, since the deployed Apps Script is already implicitly bound to one specific spreadsheet. Optional so pre-existing connectors without it don't break.
+- `lib/googleSheetId.ts`: `extractGoogleSheetId()` pulls a Sheet ID out of a pasted Sheets URL (`/spreadsheets/d/<id>/...`) or passes through a bare ID as-is.
+- `generateMappingRows()` now takes a `connectorId` and prepends a `['Connector ID', connectorId]` informational row (plus a blank spacer) to the generated Mapping rows — purely for traceability when looking at a Mapping tab directly; `readMappingSheet()` already ignores any row whose column A isn't exactly `"Row Block ID"` or `"Block ID"`, so no Apps Script change was needed for this to be safely ignored.
+- Wizard (`app/setup/page.tsx`): added a "Google Sheet URL or ID" field in Step 1. Added edit-mode support — arriving with `?connectorId=&notionPageId=&appsScriptUrl=&sheetId=` query params pre-fills all of Step 1, jumps straight to Step 2, and auto-lists blocks for the given page (extracted the block-listing logic into `listBlocksFor()` so both the button and this auto-trigger-on-mount effect share it). Step 2 shows a banner reminding the person to paste new mapping rows at the BOTTOM of the existing Mapping tab, not overwrite it.
+- Admin page (`app/admin/page.tsx`): added a Sheet ID column and an **Edit mapping** button per connector row, opening `/setup` in a new tab with all four fields pre-filled from that connector's stored config. Also added a `sheetId` field to the existing add/edit form.
+- `app/api/admin/connectors` `PUT` now accepts and stores `sheetId` alongside the two existing required fields.
+**Breaking:** No — `sheetId` is optional everywhere; existing connectors without it continue to work exactly as before.
+
+---
+
+
 **Type:** Fix
 **Scope:** `app/admin/page.tsx`, `app/setup/page.tsx`
 **Summary:** User reported the flow "just stops" after clicking "Add connector" from the wizard. Root cause: the wizard's Step 3 opens `/admin` in a new tab (`target="_blank"`), so after saving there, the original wizard tab is untouched but nothing indicated that — it looked like a dead end instead of "switch back to the other tab."

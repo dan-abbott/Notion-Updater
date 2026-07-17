@@ -314,8 +314,19 @@ function exportMappedCharts(getSheet, chartMappings) {
 // Generates the Mapping sheet rows exactly as they should be pasted in,
 // starting at row 1. Each mapping carries its own tab name now (column C),
 // so data can come from any number of different sheet tabs.
-export function generateMappingRows(charts: ChartMapping[], tableRows: TableRowMapping[]): string[][] {
+export function generateMappingRows(connectorId: string, charts: ChartMapping[], tableRows: TableRowMapping[]): string[][] {
   const rows: string[][] = [];
+
+  // Purely informational — readMappingSheet() ignores any row whose column A
+  // isn't exactly "Row Block ID" or "Block ID", so this is never parsed as a
+  // mapping. It just makes it obvious, looking at the Mapping tab directly,
+  // which connector this sheet belongs to — useful once a Sheet has been
+  // through the wizard more than once (adding fields, changing a mapping,
+  // etc.) and someone's trying to confirm they're editing the right one.
+  if (connectorId) {
+    rows.push(['Connector ID', connectorId]);
+    rows.push(['']);
+  }
 
   if (tableRows.length > 0) {
     rows.push(['Tables']);

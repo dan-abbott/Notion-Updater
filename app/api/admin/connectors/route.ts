@@ -25,6 +25,7 @@ export async function PUT(request: Request) {
     const connectorId: string | undefined = body?.connectorId?.trim();
     const notionPageId: string | undefined = body?.notionPageId?.trim();
     const appsScriptUrl: string | undefined = body?.appsScriptUrl?.trim();
+    const sheetId: string | undefined = body?.sheetId?.trim() || undefined;
 
     if (!connectorId || !notionPageId || !appsScriptUrl) {
       return NextResponse.json(
@@ -35,7 +36,7 @@ export async function PUT(request: Request) {
 
     const { connectors, sha } = await fetchConnectorsFile();
     const isNew = !connectors[connectorId];
-    connectors[connectorId] = { notionPageId, appsScriptUrl };
+    connectors[connectorId] = { notionPageId, appsScriptUrl, ...(sheetId ? { sheetId } : {}) };
 
     await commitConnectorsFile(
       connectors,

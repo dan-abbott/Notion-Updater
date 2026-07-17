@@ -1,7 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { generateRandomConnectorId } from '@/lib/randomConnectorId';
+import { extractGoogleSheetId } from '@/lib/googleSheetId';
 
 const BASE_URL = 'notion-updater-pi.vercel.app';
 const CONNECTORS_JSON_URL = 'https://github.com/dan-abbott/Notion-Updater/blob/main/connectors.json';
@@ -59,7 +61,17 @@ function extractNotionIdClient(input: string): string | null {
 }
 
 export default function SetupPage() {
+  return (
+    <Suspense fallback={<main className="wrap"><p>Loading…</p></main>}>
+      <SetupPageContent />
+    </Suspense>
+  );
+}
+
+function SetupPageContent() {
+  const searchParams = useSearchParams();
   const [step, setStep] = useState(1);
+  const [isEditMode, setIsEditMode] = useState(false);
 
   // Step 1 — script setup
   const [connectorId, setConnectorId] = useState(() => generateRandomConnectorId());
@@ -68,6 +80,7 @@ export default function SetupPage() {
   const [generatingScript, setGeneratingScript] = useState(false);
   const [scriptError, setScriptError] = useState<string | null>(null);
   const [appsScriptUrl, setAppsScriptUrl] = useState('');
+  const [sheetId, setSheetId] = useState('');
 
   // Step 2 — Notion page + block selection
   const [pageInput, setPageInput] = useState('');
@@ -116,7 +129,7 @@ export default function SetupPage() {
 
   // --- Step 2 actions ---
 
-  async function handleListBlocks() {
+  async function listBlocksFor(idOrUrl: string) {
     setLoadingBlocks(true);
     setBlocksError(null);
     setBlocks(null);
@@ -127,7 +140,7 @@ export default function SetupPage() {
       const res = await fetch('/api/setup/list-blocks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pageId: pageInput }),
+        body: JSON.stringify({ pageId: idOrUrl }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not list blocks for that page.');
@@ -138,6 +151,33 @@ export default function SetupPage() {
       setLoadingBlocks(false);
     }
   }
+
+  async function handleListBlocks() {
+    await listBlocksFor(pageInput);
+  }
+
+  // Arriving from the admin page's "Edit mapping" link: prefill everything
+  // already known about this connector and jump straight to Step 2 with
+  // blocks already listed — no need to redo Step 1 (the script/deployment
+  // hasn't changed) just to get to the mapping step.
+  useEffect(() => {
+    const prefillConnectorId = searchParams.get('connectorId');
+    const prefillPageId = searchParams.get('notionPageId');
+    const prefillScriptUrl = searchParams.get('appsScriptUrl');
+    const prefillSheetId = searchParams.get('sheetId');
+
+    if (prefillConnectorId) setConnectorId(prefillConnectorId);
+    if (prefillScriptUrl) setAppsScriptUrl(prefillScriptUrl);
+    if (prefillSheetId) setSheetId(prefillSheetId);
+
+    if (prefillPageId) {
+      setIsEditMode(true);
+      setPageInput(prefillPageId);
+      setStep(2);
+      listBlocksFor(prefillPageId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function updateChart(blockId: string, patch: Partial<ChartDetails>) {
     setChartDetails(prev => ({
@@ -183,7 +223,7 @@ export default function SetupPage() {
       const res = await fetch('/api/setup/generate-mapping', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ charts, tableRows }),
+        body: JSON.stringify({ connectorId: connectorId.trim(), charts, tableRows }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not generate Mapping rows.');
@@ -196,8 +236,15 @@ export default function SetupPage() {
   }
 
   const notionPageId = extractNotionIdClient(pageInput);
+  const cleanedSheetId = extractGoogleSheetId(sheetId) || sheetId;
   const connectorsJsonSnippet = JSON.stringify(
-    { [connectorId || '<connector-id>']: { notionPageId: notionPageId || '<notion-page-id>', appsScriptUrl: appsScriptUrl || '<apps-script-url>' } },
+    {
+      [connectorId || '<connector-id>']: {
+        notionPageId: notionPageId || '<notion-page-id>',
+        appsScriptUrl: appsScriptUrl || '<apps-script-url>',
+        ...(cleanedSheetId ? { sheetId: cleanedSheetId } : { sheetId: '<google-sheet-id>' }),
+      },
+    },
     null,
     2
   );
@@ -352,6 +399,20 @@ export default function SetupPage() {
             <span className="hint">Must already exist in this Sheet's Apps Script project — this only generates the call to it.</span>
           </label>
 
+          <label className="field">
+            Google Sheet URL or ID
+            <input
+              type="text"
+              placeholder="https://docs.google.com/spreadsheets/d/..."
+              value={sheetId}
+              onChange={e => setSheetId(e.target.value)}
+            />
+            <span className="hint">
+              Just for a clear link in <code>connectors.json</code> — nothing in the sync itself reads this (the deployed
+              script is already tied to one specific Sheet).
+            </span>
+          </label>
+
           <button onClick={handleGenerateScript} disabled={generatingScript}>
             {generatingScript ? 'Generating…' : 'Generate Notion.gs'}
           </button>
@@ -396,6 +457,12 @@ export default function SetupPage() {
       {step === 2 && (
         <section className="step">
           <h2>2. Connect the Notion page &amp; map your data</h2>
+          {isEditMode && (
+            <p className="editBanner">
+              Editing connector <strong>{connectorId}</strong> — blocks are already listed. Map any new fields, then
+              paste the generated rows at the BOTTOM of the existing Mapping tab (don't overwrite what's already there).
+            </p>
+          )}
           <p className="hint">
             First, make sure this page is shared with the integration: open it in Notion → <strong>•••</strong>{' '}
             menu (top right) → <strong>Connections</strong> → add the integration this app uses. Without this,
@@ -477,7 +544,7 @@ export default function SetupPage() {
           </p>
           <div className="row">
             <a
-              href={`/admin?connectorId=${encodeURIComponent(connectorId)}&notionPageId=${encodeURIComponent(notionPageId || '')}&appsScriptUrl=${encodeURIComponent(appsScriptUrl)}`}
+              href={`/admin?connectorId=${encodeURIComponent(connectorId)}&notionPageId=${encodeURIComponent(notionPageId || '')}&appsScriptUrl=${encodeURIComponent(appsScriptUrl)}&sheetId=${encodeURIComponent(cleanedSheetId)}`}
               target="_blank"
               rel="noreferrer"
             >
@@ -571,6 +638,15 @@ export default function SetupPage() {
           text-transform: uppercase;
           letter-spacing: 0.04em;
           margin-bottom: 24px;
+        }
+        .editBanner {
+          background: #fff8e6;
+          border: 1px solid #f0dca0;
+          color: #6b5518;
+          border-radius: 8px;
+          padding: 10px 14px;
+          font-size: 13px;
+          margin-bottom: 16px;
         }
         .step {
           border-top: 1px solid #e4e4e4;

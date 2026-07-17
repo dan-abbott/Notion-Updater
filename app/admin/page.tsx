@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 type ConnectorConfig = {
   notionPageId: string;
   appsScriptUrl: string;
+  sheetId?: string;
 };
 
 export default function AdminPage() {
@@ -26,6 +27,7 @@ function AdminPageContent() {
   const [connectorId, setConnectorId] = useState('');
   const [notionPageId, setNotionPageId] = useState('');
   const [appsScriptUrl, setAppsScriptUrl] = useState('');
+  const [sheetId, setSheetId] = useState('');
   const [editingExistingId, setEditingExistingId] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
@@ -55,9 +57,11 @@ function AdminPageContent() {
     const prefillId = searchParams.get('connectorId');
     const prefillPageId = searchParams.get('notionPageId');
     const prefillUrl = searchParams.get('appsScriptUrl');
+    const prefillSheetId = searchParams.get('sheetId');
     if (prefillId) setConnectorId(prefillId);
     if (prefillPageId) setNotionPageId(prefillPageId);
     if (prefillUrl) setAppsScriptUrl(prefillUrl);
+    if (prefillSheetId) setSheetId(prefillSheetId);
     if (prefillId || prefillPageId || prefillUrl) setCameFromWizard(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -67,6 +71,7 @@ function AdminPageContent() {
     setConnectorId(id);
     setNotionPageId(config.notionPageId);
     setAppsScriptUrl(config.appsScriptUrl);
+    setSheetId(config.sheetId || '');
     setSaveError(null);
   }
 
@@ -75,6 +80,7 @@ function AdminPageContent() {
     setConnectorId('');
     setNotionPageId('');
     setAppsScriptUrl('');
+    setSheetId('');
     setSaveError(null);
   }
 
@@ -89,6 +95,7 @@ function AdminPageContent() {
           connectorId: connectorId.trim(),
           notionPageId: notionPageId.trim(),
           appsScriptUrl: appsScriptUrl.trim(),
+          sheetId: sheetId.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -150,6 +157,7 @@ function AdminPageContent() {
               <th>Connector ID</th>
               <th>Notion Page ID</th>
               <th>Apps Script URL</th>
+              <th>Sheet ID</th>
               <th></th>
             </tr>
           </thead>
@@ -159,7 +167,15 @@ function AdminPageContent() {
                 <td className="mono">{id}</td>
                 <td className="mono truncate">{config.notionPageId}</td>
                 <td className="mono truncate">{config.appsScriptUrl}</td>
+                <td className="mono truncate">{config.sheetId || '—'}</td>
                 <td className="actions">
+                  <a
+                    href={`/setup?connectorId=${encodeURIComponent(id)}&notionPageId=${encodeURIComponent(config.notionPageId)}&appsScriptUrl=${encodeURIComponent(config.appsScriptUrl)}&sheetId=${encodeURIComponent(config.sheetId || '')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <button className="small ghost">Edit mapping</button>
+                  </a>
                   <button className="small ghost" onClick={() => startEdit(id, config)}>
                     Edit
                   </button>
@@ -171,7 +187,7 @@ function AdminPageContent() {
             ))}
             {Object.keys(connectors).length === 0 && (
               <tr>
-                <td colSpan={4} className="hint">
+                <td colSpan={5} className="hint">
                   No connectors yet — add the first one below.
                 </td>
               </tr>
@@ -207,6 +223,15 @@ function AdminPageContent() {
           value={appsScriptUrl}
           onChange={e => setAppsScriptUrl(e.target.value)}
           placeholder="https://script.google.com/macros/s/.../exec"
+        />
+      </label>
+      <label className="field">
+        Google Sheet ID (optional)
+        <input
+          type="text"
+          value={sheetId}
+          onChange={e => setSheetId(e.target.value)}
+          placeholder="Just for reference — nothing reads this automatically"
         />
       </label>
 
