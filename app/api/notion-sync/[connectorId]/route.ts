@@ -201,7 +201,7 @@ export async function POST(request: Request, { params }: { params: { connectorId
   let pageId: string;
   let appsScriptUrl: string;
   try {
-    const config = getConnectorConfig(connectorId);
+    const config = await getConnectorConfig(connectorId);
     pageId = config.notionPageId;
     appsScriptUrl = config.appsScriptUrl;
   } catch (error) {

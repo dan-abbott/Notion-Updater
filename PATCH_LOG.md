@@ -4,7 +4,20 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [1.3.0] — 2026-07-10
+### [1.4.0] — 2026-07-10
+**Type:** Fix (critical)
+**Scope:** `lib/connectors.ts`, `app/api/notion-sync/[connectorId]/route.ts`. Removed: `connectors.json` from the repo (renamed to `connectors.example.json`, a template only).
+**Summary:** User discovered `connectors.json` was getting silently reset to the placeholder every time a new code release was applied — real connectors registered via the admin page kept disappearing. Root cause: `lib/connectors.ts` read `connectors.json` via a **static import**, baked into the deployed code bundle at build time. Every code-only deployment could overwrite the live connector registry with whatever `connectors.json` happened to be sitting in that release's working copy, and even legitimate admin-page commits only took effect on the *next* deploy, not immediately.
+**Details:**
+- `getConnectorConfig()` is now `async` and calls `fetchConnectorsFile()` (from `lib/github.ts`) — the same live, no-cache GitHub Contents API read already used by the admin routes and mapping files. `connectors.json` is no longer imported by any code at all; the build succeeds with the file completely absent locally (verified).
+- `app/api/notion-sync/[connectorId]/route.ts` updated to `await` the now-async call.
+- **This also fixes a second, related problem for free:** admin-page changes to `connectors.json` now take effect on the very next sync request, with no redeploy needed at all — previously they were silently waiting on Vercel's auto-redeploy-on-push before actually mattering.
+- `connectors.json` removed from the repo entirely and replaced with `connectors.example.json` (a template, for reference only — never read by any code path). The real `connectors.json` lives ONLY in the deployed repo on GitHub now, managed exclusively via the admin page (or direct GitHub edits) — it is data, not a deployment artifact, and must never be included in a code release again.
+**Breaking:** No code-level breakage — but this is the fix for a real, actively-occurring data-loss bug. The existing `connectors.json` already committed on GitHub does NOT need to change; only the code that reads it changed.
+
+---
+
+
 **Type:** Feature
 **Scope:** New: `app/page.tsx`
 **Summary:** Added a root homepage — previously `/` had no page at all (404). Two entry points: "Set up a new connector" (→ `/setup`, fresh) and "Manage existing connectors" (→ `/admin`).

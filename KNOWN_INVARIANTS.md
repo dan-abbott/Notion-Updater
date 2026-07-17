@@ -243,6 +243,15 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
+### [Deployment] — `connectors.json` must NEVER be a static import, and must NEVER be shipped in a code release
+**Rule:** `connectors.json` is read exclusively via `getConnectorConfig()` (`lib/connectors.ts`), which calls `fetchConnectorsFile()` — a live, no-cache GitHub Contents API read — on every single call. No file in this repo may ever do `import connectorsData from '../connectors.json'` or any build-time-bundled equivalent. The file itself must never be included in a delivered code release/zip; only `connectors.example.json` (a template, never read by any code) may be.
+**Why:** ⚠️ SILENT FAILURE (data loss) is exactly what happened before this was fixed — a static import bakes `connectors.json`'s CONTENT into the deployed code bundle. Every code-only deployment (even one with zero intended changes to connector registrations) would silently reset the live connector registry to whatever was in that release's local copy, erasing every connector added via the admin page since. This is precisely the kind of bug that looks like "the admin page doesn't work" when the actual cause is three steps removed (a code deploy, sometime later, unrelated to the admin page at all).
+**Example (correct):** `await fetchConnectorsFile()` inside `getConnectorConfig()`, called fresh on every sync request — the file is pure runtime data, never part of the build.
+**Example (wrong):** Reintroducing `import connectorsData from '../connectors.json'` "for simplicity" or "to avoid an extra API call" — reopens this exact data-loss bug, and additionally reintroduces the "admin changes need a redeploy to take effect" lag that was also fixed by removing the static import.
+**Source:** User-discovered production data loss ("the admin page only shows the example entry" after a code release); root-caused and fixed in `lib/connectors.ts` v1.4.0.
+
+---
+
 ### [Database / ORM Query Patterns] — `sheetId` is informational ONLY; nothing in the sync pipeline may ever read it
 **Rule:** `ConnectorConfig.sheetId` exists purely so `connectors.json` has a clear, direct link to the actual Google Sheet a connector belongs to. It must never become a dependency of `route.ts`'s sync pipeline — the Apps Script deployment (`appsScriptUrl`) is already implicitly bound to one specific spreadsheet, so there is no scenario where the sync needs `sheetId` to function.
 **Why:** Introducing a code path that reads `sheetId` to do something functional (e.g. calling the Sheets API directly) would be a much bigger change — new Google Cloud service account infrastructure, credentials, and a share-the-Sheet-with-the-service-account setup step per connector — that was explicitly scoped OUT when this field was added. Adding such a dependency later should be a deliberate, separate decision, not something that creeps in because the field happens to already exist.

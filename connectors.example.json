@@ -1,0 +1,6 @@
+{
+  "example": {
+    "notionPageId": "REPLACE_WITH_NOTION_PAGE_ID",
+    "appsScriptUrl": "REPLACE_WITH_APPS_SCRIPT_WEB_APP_URL"
+  }
+}
