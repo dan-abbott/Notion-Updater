@@ -279,6 +279,15 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
+### [File / Module Conventions] — The homepage never lists connectors directly; "edit existing" always routes through `/admin`
+**Rule:** `app/page.tsx` offers exactly two links — `/setup` and `/admin` — and must never grow its own connector list, lookup form, or direct edit-mapping links. Any "which connector do I want" decision happens on `/admin`, behind its Basic Auth gate.
+**Why:** ⚠️ SILENT FAILURE risk (information exposure, not a crash) if this boundary erodes — the homepage is intentionally ungated (anyone who can reach the app can see it), while `/admin` is gated specifically because it exposes notionPageId/appsScriptUrl/sheetId for every connector. Adding a connector list or lookup to the homepage "for convenience" would leak exactly what the admin gate exists to protect.
+**Example (correct):** Homepage's "Manage existing connectors" card links straight to `/admin`, where the actual list, "Edit mapping" buttons, and add/edit form all already live behind auth.
+**Example (wrong):** Adding a connector picker directly to the homepage to save a click — reopens the same exposure the admin gate was built to close.
+**Source:** Deliberate design choice when adding the homepage; `app/page.tsx` v1.3.0.
+
+---
+
 ### [Deployment] — `maxDuration` must stay explicit and sized for the current plan
 **Rule:** `route.ts` exports `maxDuration = 60` (Vercel Hobby's configurable ceiling as of this writing). This must never be removed, and must be raised if the project moves to Pro and the pipeline grows (more charts, more table rows). This is also the hard ceiling on how long `waitUntil(runSyncPipeline(...))` is allowed to keep running after `POST` has already responded — it is not a separate, unlimited background-task budget.
 **Why:** ⚠️ SILENT FAILURE at the platform level — Vercel's default function timeout (10s) is well under what the full `generateMetrics` + sync pipeline needs. Since the response is sent almost immediately (see the next invariant), a timeout here would no longer be visible to Notion at all — instead the background pipeline would simply get killed mid-run once `maxDuration` elapses, silently leaving the `[Status]` block on whatever message it last reached.

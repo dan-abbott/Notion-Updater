@@ -4,7 +4,18 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [1.2.0] — 2026-07-10
+### [1.3.0] — 2026-07-10
+**Type:** Feature
+**Scope:** New: `app/page.tsx`
+**Summary:** Added a root homepage — previously `/` had no page at all (404). Two entry points: "Set up a new connector" (→ `/setup`, fresh) and "Manage existing connectors" (→ `/admin`).
+**Details:**
+- Deliberately does NOT list connectors itself or offer an "edit existing" path directly — that would either duplicate `/admin`'s connector list on an ungated page (leaking page IDs/script URLs to anyone who can reach the homepage) or require building a second auth flow. Routing "edit existing" through `/admin` reuses the existing gate and the existing "Edit mapping" buttons rather than inventing a new path to the same data.
+- Client Component (`'use client'`) — required for `<style jsx global>`, same as `/setup` and `/admin`.
+**Breaking:** No — purely additive; every existing route/link is unaffected.
+
+---
+
+
 **Type:** Feature / Breaking
 **Scope:** `lib/github.ts` (generalized), new `app/api/setup/mapping/route.ts`, `lib/generateConnectorFiles.ts`, `app/setup/page.tsx`
 **Summary:** Each connector's mapping (which charts/table rows map to which Sheet cells) is now tracked as its own JSON file in the repo (`mappings/<connectorId>.json`), making the Mapping sheet tab itself a GENERATED artifact — full-replaced on every "Edit mapping" visit, not hand-edited or appended to. The generated tab now carries an explicit "DO NOT EDIT MANUALLY" warning and a link back to the admin page, since the repo JSON — not the tab — is now the source of truth.
