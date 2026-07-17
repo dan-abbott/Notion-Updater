@@ -4,7 +4,18 @@ Reverse-chronological log of meaningful changes to Notion Updater.
 
 ---
 
-### [1.4.0] — 2026-07-10
+### [1.4.1] — 2026-07-10
+**Type:** Fix
+**Scope:** `app/setup/page.tsx`
+**Summary:** User reported the "Edit mapping" flow feeling odd — after generating updated Mapping rows, it continued into Step 3 ("Register the connector") and Step 4 (Notion button setup), both irrelevant since an existing connector is, by definition, already registered and wired up.
+**Details:**
+- Step 2's "Next" button now branches on `isEditMode`: editing a connector jumps straight to Step 5 ("Done — nothing else to change"), skipping Steps 3-4 entirely; setting up a brand-new connector continues to Step 3 as before.
+- Step 5 shows a short banner in edit mode confirming the mapping was updated and that nothing else (script redeploy, `connectors.json`) needs to change, and its "Back" button returns to Step 2 (not Step 4, which was never visited in this path). The final button reads "Done" instead of "Start another connector," matching that this was a single-purpose visit.
+**Breaking:** No.
+
+---
+
+
 **Type:** Fix (critical)
 **Scope:** `lib/connectors.ts`, `app/api/notion-sync/[connectorId]/route.ts`. Removed: `connectors.json` from the repo (renamed to `connectors.example.json`, a template only).
 **Summary:** User discovered `connectors.json` was getting silently reset to the placeholder every time a new code release was applied — real connectors registered via the admin page kept disappearing. Root cause: `lib/connectors.ts` read `connectors.json` via a **static import**, baked into the deployed code bundle at build time. Every code-only deployment could overwrite the live connector registry with whatever `connectors.json` happened to be sitting in that release's working copy, and even legitimate admin-page commits only took effect on the *next* deploy, not immediately.

@@ -623,7 +623,11 @@ function SetupPageContent() {
 
               <div className="navRow">
                 <button className="ghost" onClick={() => setStep(1)}>Back</button>
-                <button onClick={() => setStep(3)}>Next: Register the connector</button>
+                {isEditMode ? (
+                  <button onClick={() => setStep(5)}>Done — nothing else to change</button>
+                ) : (
+                  <button onClick={() => setStep(3)}>Next: Register the connector</button>
+                )}
               </div>
             </>
           )}
@@ -698,6 +702,12 @@ function SetupPageContent() {
       {step === 5 && (
         <section className="step">
           <h2>5. Test it</h2>
+          {isEditMode && (
+            <p className="editBanner">
+              Mapping updated for <strong>{connectorId}</strong> — no need to redeploy the script or touch{' '}
+              <code>connectors.json</code>, since nothing about the connector's identity changed.
+            </p>
+          )}
           <ol className="instructionsList">
             <li>Click the button on the Notion page.</li>
             <li>Watch the <code>[Status]</code> block — it should move through its stages within a few seconds.</li>
@@ -705,8 +715,8 @@ function SetupPageContent() {
             <li>If anything looks off, check the Vercel logs for this connector — chart/table mismatches show up as explicit warnings.</li>
           </ol>
           <div className="navRow">
-            <button className="ghost" onClick={() => setStep(4)}>Back</button>
-            <button onClick={() => window.location.reload()}>Start another connector</button>
+            <button className="ghost" onClick={() => setStep(isEditMode ? 2 : 4)}>Back</button>
+            <button onClick={() => window.location.reload()}>{isEditMode ? 'Done' : 'Start another connector'}</button>
           </div>
         </section>
       )}
