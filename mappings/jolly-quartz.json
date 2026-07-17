@@ -1,0 +1,94 @@
+{
+  "charts": [
+    {
+      "blockId": "39f7faa6-6864-802b-aa2f-e4b5d82ac9be",
+      "tabName": "Current Summary",
+      "chartTitle": "Hardware Product Development - Project Health"
+    },
+    {
+      "blockId": "39f7faa6-6864-80db-ba3a-d4d387d8f395",
+      "tabName": "Current Summary",
+      "chartTitle": "Robotics & Automation - Project Health"
+    },
+    {
+      "blockId": "39f7faa6-6864-8013-9d38-ee7aebfebdec",
+      "tabName": "Current Summary",
+      "chartTitle": "Hardware Product Development - Team Health"
+    },
+    {
+      "blockId": "39f7faa6-6864-8032-87f5-c8e7d816c549",
+      "tabName": "Current Summary",
+      "chartTitle": "Hardware Product Development - Client Health"
+    },
+    {
+      "blockId": "39f7faa6-6864-8011-bf12-f839f1be705f",
+      "tabName": "Current Summary",
+      "chartTitle": "Robotics & Automation - Team Health"
+    },
+    {
+      "blockId": "39f7faa6-6864-807a-8061-f0c902c71a79",
+      "tabName": "Current Summary",
+      "chartTitle": "Robotics & Automation - Client Health"
+    }
+  ],
+  "tableRows": [
+    {
+      "blockId": "3997faa6-6864-801f-8d86-c497c81e03f4",
+      "tabName": "Current Summary",
+      "sourceCells": [
+        "B2",
+        "C2",
+        "D2",
+        "E2"
+      ]
+    },
+    {
+      "blockId": "39f7faa6-6864-80ea-a15b-f3fd0d85a206",
+      "tabName": "Current Summary",
+      "sourceCells": [
+        null,
+        "F5"
+      ]
+    },
+    {
+      "blockId": "39f7faa6-6864-80b3-85a4-cda83ef67630",
+      "tabName": "Current Summary",
+      "sourceCells": [
+        null,
+        "F6"
+      ]
+    },
+    {
+      "blockId": "39f7faa6-6864-808f-a328-c2c4b286f4e6",
+      "tabName": "Current Summary",
+      "sourceCells": [
+        null,
+        "F7"
+      ]
+    },
+    {
+      "blockId": "39f7faa6-6864-800a-82eb-e8b1529735e2",
+      "tabName": "Current Summary",
+      "sourceCells": [
+        null,
+        "C5"
+      ]
+    },
+    {
+      "blockId": "39f7faa6-6864-8015-b7dc-f2fa64088da1",
+      "tabName": "Current Summary",
+      "sourceCells": [
+        null,
+        "C6"
+      ]
+    },
+    {
+      "blockId": "39f7faa6-6864-8025-8fe5-f0eb81b47f1f",
+      "tabName": "Current Summary",
+      "sourceCells": [
+        null,
+        "C7"
+      ]
+    }
+  ]
+}
