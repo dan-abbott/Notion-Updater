@@ -314,19 +314,33 @@ function exportMappedCharts(getSheet, chartMappings) {
 // Generates the Mapping sheet rows exactly as they should be pasted in,
 // starting at row 1. Each mapping carries its own tab name now (column C),
 // so data can come from any number of different sheet tabs.
+const ADMIN_URL = 'https://notion-updater-pi.vercel.app/admin';
+
+// Generates the Mapping sheet rows exactly as they should be pasted in,
+// starting at row 1 — this is now a FULL REPLACEMENT of the tab's content,
+// not an append. The wizard tracks each connector's mapping state as a
+// JSON file in the repo (see lib/github.ts's fetchMappingFile /
+// commitMappingFile) and loads it back in on "Edit mapping," so what's
+// passed in here already represents everything this connector should have
+// mapped — old entries the person kept, plus anything changed this
+// session — not just what's new.
 export function generateMappingRows(connectorId: string, charts: ChartMapping[], tableRows: TableRowMapping[]): string[][] {
   const rows: string[][] = [];
 
-  // Purely informational — readMappingSheet() ignores any row whose column A
-  // isn't exactly "Row Block ID" or "Block ID", so this is never parsed as a
-  // mapping. It just makes it obvious, looking at the Mapping tab directly,
-  // which connector this sheet belongs to — useful once a Sheet has been
-  // through the wizard more than once (adding fields, changing a mapping,
-  // etc.) and someone's trying to confirm they're editing the right one.
+  // These first rows are purely informational — readMappingSheet() ignores
+  // any row whose column A isn't exactly "Row Block ID" or "Block ID", so
+  // none of this is ever parsed as a mapping. The warning exists because
+  // this tab is now generated/full-replaced by the wizard each time it's
+  // used — a manual edit here would simply be overwritten (or worse,
+  // silently lost) the next time someone uses "Edit mapping," since the
+  // wizard's source of truth is the mapping JSON file in the repo, not
+  // whatever's currently sitting in this tab.
+  rows.push(['⚠️ DO NOT EDIT THIS TAB MANUALLY']);
+  rows.push(['To make changes, use:', ADMIN_URL]);
   if (connectorId) {
     rows.push(['Connector ID', connectorId]);
-    rows.push(['']);
   }
+  rows.push(['']);
 
   if (tableRows.length > 0) {
     rows.push(['Tables']);

@@ -129,7 +129,72 @@ function SetupPageContent() {
 
   // --- Step 2 actions ---
 
-  async function listBlocksFor(idOrUrl: string) {
+  // Walks the listed blocks (recursing into 'columns') to find every real
+  // block ID currently on the page, plus each table row's current column
+  // count — used to filter a previously-saved mapping down to entries that
+  // still exist, and to size cellRefs correctly even if a table's column
+  // count changed since the mapping was last saved.
+  function collectBlockInfo(items: PageBlockItem[]): { blockIds: Set<string>; rowNumCols: Map<string, number> } {
+    const blockIds = new Set<string>();
+    const rowNumCols = new Map<string, number>();
+
+    function walk(list: PageBlockItem[]) {
+      for (const item of list) {
+        blockIds.add(item.id);
+        if (item.kind === 'table') {
+          for (const row of item.rows) {
+            blockIds.add(row.id);
+            rowNumCols.set(row.id, item.columns.length);
+          }
+        } else if (item.kind === 'columns') {
+          for (const col of item.columns) walk(col);
+        }
+      }
+    }
+    walk(items);
+    return { blockIds, rowNumCols };
+  }
+
+  // Loads a connector's previously-saved mapping (from its repo JSON file)
+  // and pre-populates chartDetails/tableRowDetails with whatever still
+  // matches a real block on the page — this is what makes "Edit mapping"
+  // an actual edit instead of starting blank. Entries whose block no
+  // longer exists (e.g. the row was deleted in Notion) are silently
+  // dropped rather than kept around as orphaned state.
+  async function loadExistingMapping(mappingConnectorId: string, items: PageBlockItem[]) {
+    try {
+      const res = await fetch(`/api/setup/mapping?connectorId=${encodeURIComponent(mappingConnectorId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not load existing mapping.');
+
+      const { blockIds, rowNumCols } = collectBlockInfo(items);
+
+      const newChartDetails: Record<string, ChartDetails> = {};
+      for (const chart of data.charts || []) {
+        if (blockIds.has(chart.blockId)) {
+          newChartDetails[chart.blockId] = { tabName: chart.tabName, chartTitle: chart.chartTitle };
+        }
+      }
+      setChartDetails(newChartDetails);
+
+      const newTableRowDetails: Record<string, TableRowDetails> = {};
+      for (const row of data.tableRows || []) {
+        if (blockIds.has(row.blockId)) {
+          const numCols = rowNumCols.get(row.blockId) ?? row.sourceCells.length;
+          const cellRefs = Array.from({ length: numCols }, (_, i) => row.sourceCells[i] ?? '');
+          newTableRowDetails[row.blockId] = { tabName: row.tabName, cellRefs };
+        }
+      }
+      setTableRowDetails(newTableRowDetails);
+    } catch (err) {
+      // Non-fatal by design — worst case, this session starts from a blank
+      // mapping instead of the previous one; still fully usable, just
+      // without old entries pre-filled.
+      console.error('Could not load existing mapping:', err);
+    }
+  }
+
+  async function listBlocksFor(idOrUrl: string, mappingConnectorId?: string) {
     setLoadingBlocks(true);
     setBlocksError(null);
     setBlocks(null);
@@ -145,6 +210,10 @@ function SetupPageContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not list blocks for that page.');
       setBlocks(data.items);
+
+      if (mappingConnectorId) {
+        await loadExistingMapping(mappingConnectorId, data.items);
+      }
     } catch (err) {
       setBlocksError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -174,7 +243,7 @@ function SetupPageContent() {
       setIsEditMode(true);
       setPageInput(prefillPageId);
       setStep(2);
-      listBlocksFor(prefillPageId);
+      listBlocksFor(prefillPageId, prefillConnectorId || undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -228,6 +297,29 @@ function SetupPageContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not generate Mapping rows.');
       setMappingRows(data.mappingRows);
+
+      // Commit this as the connector's new complete mapping state — what's
+      // in chartDetails/tableRowDetails right now already represents
+      // everything this connector should have mapped (old entries loaded
+      // in via "Edit mapping," plus anything added/changed this session),
+      // not just what's new. A failure here is surfaced but doesn't block
+      // showing the generated rows — the person can still paste those in
+      // manually even if the save-for-next-time didn't succeed.
+      try {
+        const saveRes = await fetch('/api/setup/mapping', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ connectorId: connectorId.trim(), charts, tableRows }),
+        });
+        const saveData = await saveRes.json();
+        if (!saveRes.ok) throw new Error(saveData.error || 'Could not save mapping state.');
+      } catch (saveErr) {
+        setMappingError(
+          `Rows generated, but saving this as the connector's tracked mapping failed: ${
+            saveErr instanceof Error ? saveErr.message : 'Unknown error'
+          }. You can still paste the rows below — future "Edit mapping" visits just won't see this session's changes.`
+        );
+      }
     } catch (err) {
       setMappingError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -459,8 +551,9 @@ function SetupPageContent() {
           <h2>2. Connect the Notion page &amp; map your data</h2>
           {isEditMode && (
             <p className="editBanner">
-              Editing connector <strong>{connectorId}</strong> — blocks are already listed. Map any new fields, then
-              paste the generated rows at the BOTTOM of the existing Mapping tab (don't overwrite what's already there).
+              Editing connector <strong>{connectorId}</strong> — blocks are already listed, and previously-mapped
+              fields are pre-filled below. Change, remove, or add fields as needed, then generate — this replaces
+              the connector's ENTIRE mapping, not just what you touch this session.
             </p>
           )}
           <p className="hint">
@@ -510,7 +603,11 @@ function SetupPageContent() {
                     {copiedKey === 'rows' ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
-                <p className="hint">Add a tab named "Mapping" in your Sheet and paste these into cell A1 (tab-separated — pastes as a real grid).</p>
+                <p className="hint">
+                  Paste these into cell A1 of the "Mapping" tab, <strong>replacing everything currently there</strong>{' '}
+                  (tab-separated — pastes as a real grid). This is now the connector's complete mapping, not an addition
+                  to what was there before — see the "DO NOT EDIT" row included at the top.
+                </p>
                 <table className="mappingTable">
                   <tbody>
                     {mappingRows.map((row, i) => (

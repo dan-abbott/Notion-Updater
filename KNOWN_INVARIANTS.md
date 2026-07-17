@@ -252,12 +252,30 @@ Stack: Next.js 14 (App Router), deployed on Vercel, integrating Notion API (`@no
 
 ---
 
-### [UI / Component Constraints] — "Edit mapping" only ever ADDS to a Mapping sheet; it can't reconcile against what's already there
-**Rule:** The wizard's edit-mode (arriving via the admin page's "Edit mapping" button) generates a fresh set of Mapping rows from scratch, based on whatever is currently selected in Step 2 — it does NOT read the connector's existing Mapping tab content first. The generated rows are meant to be pasted at the BOTTOM of the existing tab (appended), never used to overwrite it.
-**Why:** ⚠️ SILENT FAILURE risk if this expectation isn't clearly communicated — pasting edit-mode output at cell A1 (overwriting the existing Mapping content) would silently delete every previously-working mapping that wasn't re-selected in this session, since the wizard has no way to know what's already there.
-**Example (correct):** Step 2's edit-mode banner explicitly says to paste new rows at the bottom, not overwrite.
-**Example (wrong):** Treating edit-mode output as a full replacement for the Mapping tab — it only ever represents what was freshly selected in that session, not the connector's complete mapping state.
-**Source:** Explicit scope boundary from the "build update capability, skip auto-write" design discussion; `app/setup/page.tsx` v1.1.0.
+### [Database / ORM Query Patterns] — Each connector's mapping is tracked as `mappings/<connectorId>.json`; the Mapping TAB is a generated artifact, not the source of truth
+**Rule:** `lib/github.ts`'s `fetchMappingFile()`/`commitMappingFile()` are the authoritative record of a connector's mapping. The actual Mapping tab in the Google Sheet is regenerated (full replacement) from this JSON every time someone uses the wizard's "Edit mapping" flow — it must never be treated as something to append to, or as a place to hand-edit long-term.
+**Why:** ⚠️ SILENT FAILURE if this boundary is violated — hand-editing the Mapping tab directly (without a follow-up wizard visit to record the change) works fine for the Apps Script's own `readMappingSheet()`, which reads the live tab, not the JSON — but the NEXT time someone uses "Edit mapping," the wizard will regenerate the tab from the (now-stale) JSON, silently reverting the hand-made change. This is exactly why the generated tab now includes a `"⚠️ DO NOT EDIT THIS TAB MANUALLY"` row with a link back to the admin page.
+**Example (correct):** All mapping changes go through the wizard's Step 2, which loads the current JSON, lets you edit, and commits the updated JSON alongside generating fresh rows.
+**Example (wrong):** Directly editing a cell reference in the live Mapping tab "just this once" without ever revisiting the wizard for that connector — works until someone else uses "Edit mapping," at which point it's silently gone.
+**Source:** Explicit user design decision (JSON-in-repo as source of truth, in exchange for a real edit-existing-connector flow); implemented in `lib/github.ts`/`app/api/setup/mapping/route.ts` v1.2.0.
+
+---
+
+### [Database / ORM Query Patterns] — `POST /api/setup/mapping` always commits a FULL replacement, never a delta
+**Rule:** The body sent to `POST /api/setup/mapping` (and the `MappingFile` it becomes) must represent the connector's ENTIRE intended mapping state, not just what changed in a given session. The wizard's `handleGenerateMapping()` sends the complete current `chartDetails`/`tableRowDetails` — which already includes anything loaded in via `loadExistingMapping()` plus anything added/edited this session — precisely so this holds.
+**Why:** ⚠️ SILENT FAILURE (data loss) if a caller ever sent only "what's new this session" — since the endpoint always commits a full replacement (matching how the Mapping tab itself gets regenerated), sending a partial set would silently drop every mapping entry not touched in that particular session.
+**Example (correct):** `loadExistingMapping()` pre-populates state with everything previously saved (filtered to blocks that still exist); new selections merge into that SAME state object, so generating naturally sends the full picture.
+**Example (wrong):** Sending only newly-toggled chart/table-row entries to `POST /api/setup/mapping` — would silently erase every entry from a prior session that wasn't re-selected this time.
+**Source:** `app/setup/page.tsx` / `app/api/setup/mapping/route.ts`, v1.2.0.
+
+---
+
+### [UI / Component Constraints] — "Edit mapping" loads existing state; entries whose block no longer exists are dropped, not errored
+**Rule:** `loadExistingMapping()` filters the saved mapping against `collectBlockInfo()`'s live block-ID set (from the just-fetched page layout). A saved entry whose block ID isn't found (e.g. the row/image was deleted in Notion since the last mapping save) is silently excluded from the pre-filled state — not shown as an error, not kept around as orphaned/unusable state.
+**Why:** A block that no longer exists can't be re-selected or edited anyway — surfacing it as an error would just be noise with no actionable fix beyond "it's gone, don't worry about it." Silent exclusion keeps the pre-filled form showing exactly what's still real and editable.
+**Example (correct):** A previously-mapped chart whose image block was deleted from Notion just doesn't appear pre-filled — the wizard behaves as if it were never mapped, for this session.
+**Example (wrong):** Throwing or displaying an error for every stale block ID found in the saved mapping — technically accurate but not actionable, and noisy for what's likely a routine occurrence (Notion pages get edited).
+**Source:** `collectBlockInfo()` / `loadExistingMapping()`, `app/setup/page.tsx` v1.2.0.
 
 ---
 
